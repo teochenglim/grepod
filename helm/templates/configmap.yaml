@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "grepod.fullname" . }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "grepod.labels" . | nindent 4 }}
+data:
+  NAMESPACE: {{ .Values.namespace | default "default" | quote }}
+  RETENTION_DAYS: {{ .Values.retentionDays | default 7 | quote }}
+  BATCH_SIZE: {{ .Values.batchSize | default 200 | quote }}
+  BATCH_INTERVAL: {{ .Values.batchInterval | default "500ms" | quote }}
+  INCLUDE_INIT_CONTAINERS: {{ .Values.includeInitContainers | default false | quote }}
+  DATA_DIR: "/data"
+  LISTEN_ADDR: ":8080"

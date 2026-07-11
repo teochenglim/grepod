@@ -1,0 +1,51 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: grepod
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# The namespace grepod watches AND is deployed into (grepod is
+# namespace-scoped — run one release per namespace you want indexed).
+namespace: "default"
+
+retentionDays: 7
+batchSize: 200
+batchInterval: "500ms"
+includeInitContainers: false
+
+storageSize: 10Gi
+storageClassName: ""
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+# Optional. grepod has no built-in auth — see helm/README.md before
+# enabling this on anything reachable outside the cluster.
+ingress:
+  enabled: false
+  className: "nginx"
+  host: "grepod.example.com"
+  annotations: {}
+
+# Optional, and deliberately inert: min/maxReplicas are hardcoded to 1 in
+# the template regardless of this setting, since grepod cannot run more
+# than one replica. See helm/README.md.
+autoscaling:
+  enabled: false
+
+resources:
+  limits:
+    memory: 256Mi
+    cpu: 500m
+  requests:
+    memory: 128Mi
+    cpu: 100m
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532

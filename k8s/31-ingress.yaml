@@ -1,0 +1,24 @@
+# Optional. grepod has no built-in auth, so if you expose it beyond the
+# cluster, put an auth layer in front (e.g. an nginx-ingress
+# auth-basic/auth-url annotation, or an OAuth2 proxy) — see k8s/README.md.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grepod
+  namespace: default
+  labels:
+    app.kubernetes.io/name: grepod
+  annotations: {}
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: grepod.example.com # replace with your real host
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grepod
+                port:
+                  number: 80

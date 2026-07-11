@@ -1,0 +1,28 @@
+# Included for completeness (grepod is deployed as a Deployment, and the
+# golden project template always ships an HPA for that workload kind), but
+# min == max == 1 intentionally: grepod cannot run more than one replica.
+# A second replica would double-ingest every log line (two tailers
+# watching the same namespace) and can't mount the ReadWriteOnce /data
+# volume alongside the first. Do not raise maxReplicas without first
+# reworking storage (see DESIGN/03_design_storage.md).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: grepod
+  namespace: default
+  labels:
+    app.kubernetes.io/name: grepod
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: grepod
+  minReplicas: 1
+  maxReplicas: 1
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80

@@ -1,0 +1,6 @@
+# Config for pinact (https://github.com/suzuki-shunsuke/pinact).
+# Pins every third-party action referenced in .github/workflows/*.yml to a
+# full commit SHA (with a `# vX.Y.Z` comment) so a workflow can't be
+# silently altered upstream. Run `make github-action-bump` to apply/update.
+files:
+  - pattern: .github/workflows/*.yml

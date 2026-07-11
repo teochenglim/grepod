@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "grepod.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "grepod.labels" . | nindent 4 }}
+spec:
+  # Pinned to 1: a second replica would double-ingest every log line (two
+  # tailers watching the same namespace) and /data is a ReadWriteOnce
+  # volume. See DESIGN/03_design_storage.md#why-not-horizontal-scale-out.
+  replicas: 1
+  strategy:
+    type: Recreate # avoid two replicas ever mounting the RWO volume at once
+  selector:
+    matchLabels:
+      {{- include "grepod.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "grepod.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "grepod.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: {{ .Values.podSecurityContext.runAsNonRoot | default true }}
+        runAsUser: {{ .Values.podSecurityContext.runAsUser | default 65532 }}
+        fsGroup: {{ .Values.podSecurityContext.fsGroup | default 65532 }}
+      containers:
+        - name: grepod
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: {{ include "grepod.fullname" . }}-config
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "grepod.fullname" . }}-data

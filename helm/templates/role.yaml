@@ -1,0 +1,30 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "grepod.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "grepod.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "grepod.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "grepod.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "grepod.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "grepod.serviceAccountName" . }}
+    namespace: {{ .Values.namespace }}

@@ -1,0 +1,30 @@
+# Build artifacts
+/bin/
+/dist/
+/grepod
+
+# Local data (SQLite shards written by DATA_DIR, defaults to /data but can
+# be pointed locally during development)
+/data/
+/*.db
+/*.db-wal
+/*.db-shm
+
+# Local config / secrets
+/config.yaml
+/.env
+/helm/values-secrets.yaml
+/k8s/11-secret.yaml
+
+# Test/coverage output
+/coverage.out
+/coverage.html
+
+# IDE / OS cruft
+/.idea/
+/.vscode/
+.DS_Store
+
+# Agent tooling
+/.claude/
+/.serena/

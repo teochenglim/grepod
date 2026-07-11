@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grepod-config
+  namespace: default # the namespace grepod watches AND is deployed into
+  labels:
+    app.kubernetes.io/name: grepod
+data:
+  NAMESPACE: "default" # must match metadata.namespace above
+  RETENTION_DAYS: "7"
+  BATCH_SIZE: "200"
+  BATCH_INTERVAL: "500ms"
+  INCLUDE_INIT_CONTAINERS: "false"
+  DATA_DIR: "/data"
+  LISTEN_ADDR: ":8080"

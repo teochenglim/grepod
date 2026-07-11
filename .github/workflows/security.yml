@@ -1,0 +1,113 @@
+name: Security
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+  schedule:
+    - cron: '0 6 * * 1'   # weekly Monday 6 AM UTC
+
+permissions:
+  contents: read
+  security-events: write   # required to upload SARIF to GitHub Security tab
+
+jobs:
+  # ── Semgrep SAST ────────────────────────────────────────────────────────────
+  #
+  # Scans for SQL injection, OWASP Top 10, secrets, and Go security issues.
+  # SEMGREP_APP_TOKEN is optional — set it in repo secrets to push results to
+  # the Semgrep Cloud dashboard. Without it, findings are printed to the log.
+
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Scan
+        run: |
+          semgrep scan \
+            --config p/golang \
+            --config p/sql-injection \
+            --config p/secrets \
+            --config p/owasp-top-ten \
+            --sarif \
+            --output semgrep.sarif \
+            --error
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  # ── Trivy — dependency + filesystem vulnerability scan ─────────────────────
+  #
+  # Scans Go modules and repo files for known CVEs.
+  # Fails on CRITICAL or HIGH findings.
+
+  trivy:
+    name: Trivy scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Scan filesystem (fail on CRITICAL/HIGH CVEs)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+
+      - name: Scan filesystem (SARIF — uploaded to Security tab)
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy.sarif
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+        env:
+          TRIVY_SCANNERS: vuln
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+        with:
+          sarif_file: trivy.sarif
+          category: trivy
+
+  # ── Trivy — container image scan ────────────────────────────────────────────
+  #
+  # Builds the actual Dockerfile and scans the resulting image, catching CVEs
+  # in the distroless base image as well as the Go module vulnerabilities above.
+
+  trivy-image:
+    name: Trivy image scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Build image
+        run: docker build -t grepod:scan .
+
+      - name: Scan image (fail on CRITICAL/HIGH CVEs)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: grepod:scan
+          format: table
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          exit-code: '1'

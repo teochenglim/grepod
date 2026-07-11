@@ -1,0 +1,28 @@
+{{- if .Values.autoscaling.enabled -}}
+# minReplicas/maxReplicas are intentionally hardcoded to 1, not
+# values-driven: grepod cannot run more than one replica (double
+# ingestion + a ReadWriteOnce volume). See
+# DESIGN/03_design_storage.md#why-not-horizontal-scale-out. This resource
+# exists for template completeness, not to actually scale anything.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "grepod.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "grepod.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "grepod.fullname" . }}
+  minReplicas: 1
+  maxReplicas: 1
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+{{- end }}
