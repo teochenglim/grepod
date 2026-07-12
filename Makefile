@@ -121,6 +121,8 @@ bump: ## Rewrite VERSION + helm/k8s image tags, and docker build a local image m
 release: ## Bump VERSION + helm/k8s image tags, push HEAD, tag, push the tag - triggers GitHub Actions (VERSION=x.y.z required)
 	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=x.y.z"; exit 1; fi
 	$(MAKE) bump VERSION=$(VERSION)
+	git add VERSION helm/Chart.yaml k8s/20-deployment.yaml
+	git commit --amend --no-edit
 	git push origin HEAD
 	git tag v$(VERSION)
 	git push origin v$(VERSION)
