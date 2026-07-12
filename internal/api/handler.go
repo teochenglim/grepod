@@ -14,6 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/teochenglim/grepod/internal/metrics"
 	"github.com/teochenglim/grepod/internal/storage"
 )
 
@@ -27,6 +30,7 @@ type Handler struct {
 	ready             func() bool
 	defaultSearchDays int
 	broadcaster       *storage.Broadcaster
+	metrics           *metrics.Metrics
 }
 
 // New builds a Handler. templatesFS and staticFS should be the embedded
@@ -39,8 +43,10 @@ type Handler struct {
 // (overridable at startup via DEFAULT_SEARCH_DAYS — see cmd/server); a
 // value <= 0 falls back to 7, matching RETENTION_DAYS' own default, since
 // searching further back than what's retained by default finds nothing
-// anyway. broadcaster feeds /api/tail — see storage.Broadcaster.
-func New(store *storage.Store, templatesFS, staticFS embed.FS, ready func() bool, defaultSearchDays int, broadcaster *storage.Broadcaster) (*Handler, error) {
+// anyway. broadcaster feeds /api/tail — see storage.Broadcaster. m
+// records RED metrics for /api/search and backs /metrics (see
+// internal/metrics); a nil m disables both.
+func New(store *storage.Store, templatesFS, staticFS embed.FS, ready func() bool, defaultSearchDays int, broadcaster *storage.Broadcaster, m *metrics.Metrics) (*Handler, error) {
 	index, err := template.ParseFS(templatesFS, "templates/index.html")
 	if err != nil {
 		return nil, err
@@ -56,7 +62,7 @@ func New(store *storage.Store, templatesFS, staticFS embed.FS, ready func() bool
 	}
 	h := &Handler{
 		store: store, mux: http.NewServeMux(), index: index, ready: ready,
-		defaultSearchDays: defaultSearchDays, broadcaster: broadcaster,
+		defaultSearchDays: defaultSearchDays, broadcaster: broadcaster, metrics: m,
 	}
 
 	h.mux.HandleFunc("/api/search", h.handleSearch)
@@ -64,6 +70,10 @@ func New(store *storage.Store, templatesFS, staticFS embed.FS, ready func() bool
 	h.mux.HandleFunc("/api/known", h.handleKnown)
 	h.mux.HandleFunc("/healthz", h.handleHealthz)
 	h.mux.HandleFunc("/readyz", h.handleReadyz)
+	// promhttp.Handler() reads the same default Prometheus registry every
+	// package's collectors register against (see internal/metrics) — no
+	// registry needs threading through Handler.
+	h.mux.Handle("/metrics", promhttp.Handler())
 	h.mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
 	h.mux.HandleFunc("/", h.handleIndex)
 
@@ -155,11 +165,19 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	level := r.URL.Query().Get("level")
 
+	searchStart := time.Now()
 	page, err := h.store.Search(storage.SearchOptions{
 		Query: q, Start: start, End: end, Limit: 500,
 		Cursor: r.URL.Query().Get("cursor"), MinLevel: level,
 	})
+	if h.metrics != nil {
+		h.metrics.SearchRequestsTotal.Inc()
+		h.metrics.SearchDuration.Observe(time.Since(searchStart).Seconds())
+	}
 	if err != nil {
+		if h.metrics != nil {
+			h.metrics.SearchErrorsTotal.Inc()
+		}
 		writeJSONError(w, http.StatusInternalServerError, "search failed: "+err.Error())
 		return
 	}

@@ -25,7 +25,7 @@ func newTestHandlerWithSearchDays(t *testing.T, ready bool, defaultSearchDays in
 	}
 	t.Cleanup(store.Close)
 
-	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return ready }, defaultSearchDays, storage.NewBroadcaster())
+	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return ready }, defaultSearchDays, storage.NewBroadcaster(), nil)
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestHandleSearch_MissingQueryBrowsesInsteadOf400(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
 	}
-	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, storage.NewBroadcaster())
+	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, storage.NewBroadcaster(), nil)
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestHandleSearch_LevelFiltersAtOrAboveSeverity(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
 	}
-	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, storage.NewBroadcaster())
+	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, storage.NewBroadcaster(), nil)
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestHandleSearch_CursorPaginatesResults(t *testing.T) {
 	if err := store.InsertBatch(lines); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
 	}
-	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, storage.NewBroadcaster())
+	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, storage.NewBroadcaster(), nil)
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestHandleKnown_ReturnsDistinctPodsAndContainers(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
 	}
-	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, storage.NewBroadcaster())
+	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, storage.NewBroadcaster(), nil)
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}

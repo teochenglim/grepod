@@ -513,3 +513,69 @@ func TestCleanupOldDBs_DeletesOnlyExpiredShards(t *testing.T) {
 		t.Errorf("expected the recent shard to survive retention: %v", err)
 	}
 }
+
+// RELEASE/v0.7.0: LastSeen finds the most recent indexed timestamp for a
+// pod/container, ignoring rows from other pods/containers.
+func TestLastSeen_ReturnsMostRecentTimestampForContainer(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now()
+	older := now.Add(-time.Hour)
+
+	if err := store.InsertBatch([]LogLine{
+		{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: older, Content: "older line"},
+		{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: now, Content: "newest line"},
+		{Pod: "web-1", Namespace: "default", Container: "sidecar", Timestamp: now.Add(time.Hour), Content: "different container"},
+	}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	ts, ok, err := store.LastSeen("web-1", "app")
+	if err != nil {
+		t.Fatalf("LastSeen: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected a marker to be found")
+	}
+	if !ts.Equal(now.Truncate(time.Nanosecond)) && ts.Sub(now).Abs() > time.Millisecond {
+		t.Errorf("LastSeen = %v, want ~%v (the newest 'app' line, not 'sidecar')", ts, now)
+	}
+}
+
+// A container that's never been indexed has no marker — the tailer falls
+// through to its pre-v0.7.0 behavior in that case (see DESIGN/02).
+func TestLastSeen_NoRowsReturnsNotFound(t *testing.T) {
+	store := newTestStore(t)
+
+	_, ok, err := store.LastSeen("never-seen", "app")
+	if err != nil {
+		t.Fatalf("LastSeen: %v", err)
+	}
+	if ok {
+		t.Fatal("expected no marker for a container with no indexed lines")
+	}
+}
+
+// LastSeen must find a marker in yesterday's shard when today's shard
+// doesn't exist yet (e.g. grepod restarting right after midnight, before
+// any line has landed in today's shard).
+func TestLastSeen_FindsMarkerInPriorDayShard(t *testing.T) {
+	store := newTestStore(t)
+	yesterday := time.Now().AddDate(0, 0, -1)
+
+	if err := store.InsertBatch([]LogLine{
+		{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: yesterday, Content: "yesterday's last line"},
+	}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	ts, ok, err := store.LastSeen("web-1", "app")
+	if err != nil {
+		t.Fatalf("LastSeen: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected a marker from yesterday's shard")
+	}
+	if ts.Sub(yesterday).Abs() > time.Second {
+		t.Errorf("LastSeen = %v, want ~%v", ts, yesterday)
+	}
+}

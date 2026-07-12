@@ -26,7 +26,7 @@ func newTailTestHandler(t *testing.T) (*Handler, *storage.Broadcaster) {
 	t.Cleanup(store.Close)
 
 	b := storage.NewBroadcaster()
-	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, b)
+	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, b, nil)
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}

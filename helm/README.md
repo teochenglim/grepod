@@ -53,6 +53,8 @@ tagged push).
 | `defaultSearchDays` | `7` | How many days back `/api/search` looks when the caller omits `start`. |
 | `storageSize` / `storageClassName` | `10Gi` / `""` (cluster default) | The `ReadWriteOnce` PVC backing `/data`. |
 | `service.type` / `.port` / `.targetPort` | `ClusterIP` / `80` / `8080` | |
+| `serviceMonitor.enabled` | `false` | Renders a Prometheus Operator `ServiceMonitor` — see "Metrics" below. |
+| `serviceMonitor.interval` / `.labels` | `30s` / `{}` | Scrape interval; extra labels for the Operator's `serviceMonitorSelector` to match. |
 | `ingress.enabled` | `false` | See "Exposing it safely" below before enabling. |
 | `ingress.className` / `.host` / `.annotations` | `nginx` / `grepod.example.com` / `{}` | |
 | `autoscaling.enabled` | `false` | Renders an `HorizontalPodAutoscaler` — but see below, it can't actually scale. |
@@ -78,6 +80,19 @@ default off) hardcodes `minReplicas`/`maxReplicas: 1` regardless of any
 value — it exists for template completeness, not because it does anything
 useful. See
 [DESIGN/03](../DESIGN/03_design_storage.md#why-not-horizontal-scale-out).
+
+## Metrics
+
+`/metrics` (Prometheus text format, v0.7.0 — see
+[DESIGN/04](../DESIGN/04_design_api.md)) is served on the same port as
+everything else, since grepod is one HTTP server, not a sidecar-per-concern
+setup. `templates/deployment.yaml` always sets `prometheus.io/scrape` /
+`prometheus.io/port` / `prometheus.io/path` pod annotations, which the
+classic annotation-based Prometheus scrape config picks up with no chart
+changes needed. If your cluster runs the Prometheus Operator instead, set
+`serviceMonitor.enabled: true` to render a `ServiceMonitor` targeting the
+`Service`'s `http` port — left off by default since enabling it without the
+Operator's CRDs installed makes `helm install`/`upgrade` fail validation.
 
 ## Exposing it safely
 

@@ -60,8 +60,6 @@ Implementation and the actual release are a hard split, always in this
 order:
 
 1. **Claude**: implements the release's scope, runs tests/vet/build,
-   writes/updates the matching `RELEASE/vX.Y.Z.md` (status line included —
-   see [RELEASE.md](RELEASE.md) for the two states a doc moves through),
    updates any other docs the change touches, and ends the turn with a
    one-line suggested commit message. Proposing only — never runs
    `git add`/`commit`/`tag`/`push`/`make release` itself, and never
@@ -69,6 +67,14 @@ order:
    the moment. Release-flavored phrasing ("cut vX.Y.Z," "ship it") is not
    authorization to commit — verify locally, leave changes uncommitted,
    say what's ready.
+
+   **The status line goes to its final value in this same step:**
+   `shipped, tagged vX.Y.Z.`, written before the user runs any git
+   command — that wording is itself the cue for the user's next step, so
+   there's no later turn where Claude comes back to flip it. Use `ready
+   to tag — implemented and verified locally, uncommitted.` only when a
+   turn stops before the release's scope is actually finished. See
+   [RELEASE.md](RELEASE.md) for the full two-state explanation.
 2. **User**: reviews, then does `git add` / `git commit` /
    `make release VERSION=x.y.z` manually, immediately after Claude
    finishes step 1 — not a separate later session.

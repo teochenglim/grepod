@@ -581,6 +581,70 @@ func (s *Store) KnownPods(since time.Time) (KnownFilters, error) {
 	return out, nil
 }
 
+// markerLookbackDays bounds how many calendar days back LastSeen scans
+// for a pod/container's most recently indexed line, most-recent-day
+// first. A container that hasn't logged within this window is treated as
+// having no marker (tailer.Manager falls through to its pre-v0.7.0
+// behavior — ingest the container's entire currently-buffered log)
+// rather than scanning every shard ever written, most of which retention
+// will have deleted anyway. See RELEASE/v0.7.0.md.
+const markerLookbackDays = 30
+
+// LastSeen returns the most recent timestamp already indexed for
+// pod/container, used by tailer.Manager to seed PodLogOptions.SinceTime
+// on a fresh process's first (re)connect to an already-running container
+// — see DESIGN/02. Shards are checked most-recent-day-first and the scan
+// stops at the first day with a matching row: a later calendar day's
+// timestamps are always greater than an earlier day's (shards are
+// disjoint by construction — InsertBatch groups by date), so the first
+// hit scanning backward from today is already the max; there's no need
+// to open every shard and take an overall MAX. ok is false if nothing
+// matching pod/container was found within markerLookbackDays.
+func (s *Store) LastSeen(pod, container string) (time.Time, bool, error) {
+	today := time.Now()
+	for i := 0; i < markerLookbackDays; i++ {
+		date := today.AddDate(0, 0, -i).Format(dateLayout)
+		path := s.dbPath(date)
+		if _, err := os.Stat(path); err != nil {
+			continue // no shard for that day
+		}
+		ts, ok, err := lastSeenInShard(path, pod, container)
+		if err != nil {
+			return time.Time{}, false, err
+		}
+		if ok {
+			return ts, true, nil
+		}
+	}
+	return time.Time{}, false, nil
+}
+
+// lastSeenInShard opens path as its own short-lived connection (separate
+// from Store.dbs' long-lived write handles — this may run against a
+// shard this process has never written to, e.g. right after a restart)
+// and returns the max timestamp recorded for pod/container, if any.
+func lastSeenInShard(path, pod, container string) (time.Time, bool, error) {
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer db.Close()
+
+	var raw sql.NullString
+	err = db.QueryRow(`SELECT MAX(timestamp) FROM fts WHERE pod = ? AND container = ?`, pod, container).Scan(&raw)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("query last-seen in %s: %w", path, err)
+	}
+	if !raw.Valid {
+		return time.Time{}, false, nil
+	}
+	ts, err := time.Parse(time.RFC3339Nano, raw.String)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("parse timestamp in %s: %w", path, err)
+	}
+	return ts, true, nil
+}
+
 // CleanupOldDBs deletes shard files older than retentionDays and vacuums
 // the shards that remain, reclaiming disk space from FTS5 fragmentation.
 func (s *Store) CleanupOldDBs(retentionDays int) error {
