@@ -2,99 +2,61 @@
 
 grepod: single Go binary that tails every pod's logs in one Kubernetes
 namespace via `client-go`, indexes them into daily-sharded SQLite FTS5
-databases, and serves an embedded search UI. No Loki, no sidecars.
-Module: `github.com/teochenglim/grepod`. Deployed as a `Deployment`
-(never `DaemonSet` — it's namespace-scoped, not node-local) and **cannot
-run more than one replica** — see
-[DESIGN/03](DESIGN/03_design_storage.md#why-not-horizontal-scale-out)
-before touching `replicas`/`autoscaling` anywhere.
+databases, and serves an embedded search UI. Namespace-scoped by design —
+never `DaemonSet`, never more than one replica. Module:
+`github.com/teochenglim/grepod`.
 
-## Working conventions
+## Read these, in order
 
-- **After implementing something (code, docs, or scaffolding), end that
-  turn's reply with a one-line suggested commit message** for what
-  changed — don't wait to be asked. Still never run `git add`/`commit`/
-  `push` unless explicitly asked to; this is only about proposing the
-  message, not performing the commit.
+1. [ARCHITECTURE.md](ARCHITECTURE.md) — layering, where-things-go table,
+   data-flow walkthrough, "adding a new X" checklists.
+2. [DESIGN.md](DESIGN.md) → `DESIGN/01`–`04` — why each subsystem works
+   the way it does, including non-goals and the no-replicas constraint.
+3. [RELEASE.md](RELEASE.md) → `RELEASE/vX.Y.Z.md` — what shipped, what's
+   planned, and every bug a version's own work surfaced. This is where
+   version-specific history and rationale live — not here.
+4. [k8s/README.md](k8s/README.md) / [helm/README.md](helm/README.md) —
+   deployment, kept in sync as two interfaces to the same decisions.
 
 ## Where things go
-
-Read [ARCHITECTURE.md](ARCHITECTURE.md) first — it has the full layering
-diagram, a where-things-go table, and a data-flow walkthrough. Short version:
 
 | Concern | Location |
 | :--- | :--- |
 | Pod discovery / log streaming | `internal/tailer/manager.go` |
 | Write batching, SQLite/FTS5, retention | `internal/storage/` |
 | HTTP API (`/api/search`) | `internal/api/handler.go` |
-| Search UI markup | `web/templates/index.html` (Go `html/template`) |
-| Search UI styling/behavior | `web/static/{style.css,app.js,favicon.svg}` |
+| Search UI | `web/templates/index.html` + `web/static/{style.css,app.js,favicon.svg}` |
 | Config (env vars) | `cmd/server/main.go` (`env*` helpers) |
-| Design rationale | [DESIGN.md](DESIGN.md) → `DESIGN/01`–`04` |
-| Release history | [RELEASE.md](RELEASE.md) → `RELEASE/vX.Y.Z.md` |
+| CI/CD | `.github/workflows/*.yml` (tag-driven; SHA-pinned actions) |
 
 `web` is its own package (not under `cmd/server`) because `go:embed`
-patterns can't reach outside the directory of the file that declares
-them — `web/web.go` owns both `TemplatesFS` and `StaticFS`.
+patterns can't reach outside the directory of the file that declares them.
 
-## Build / test / run
+## Commands
 
-`make` with no args prints every target. Highlights:
+`make` with no args prints every target. `make release VERSION=x.y.z`
+triggers the tag-driven release CI — see [RELEASE.md](RELEASE.md) before
+using it.
 
-```sh
-make build          # binary -> bin/grepod
-make run            # go run ./cmd/server (needs a kubeconfig context)
-make test           # go test ./... -race -cover
-make docker-build   # local image
-make helm-template  # render the chart without installing
-make k8s-apply      # kubectl apply -f k8s/
-make release VERSION=x.y.z   # bump + commit + tag + push -> triggers release CI
-```
+## Conventions / deviations from the golden template
 
-## CI/CD
+Came out of scaffolding via `.claude/skills/spawn-golang.md` — don't
+"fix" these back:
 
-Tag-driven (`v[0-9]*`), not push-to-main:
+- `scripts/`, not `hack/`.
+- Helm chart is flat (`helm/Chart.yaml`, `helm/templates/`), not nested
+  under `helm/grepod/`.
+- No `docker-compose.yaml` — Kubernetes/Helm are the only deployment path.
+- GitHub Actions follow the pinned-SHA style of
+  `~/code/servicedesk/.github/workflows`, not ad-hoc `@v4` tags.
 
-- `ci.yml` — vet/build/test, on every PR + tag push.
-- `release.yml` — test gate → 6-way OS/arch binary matrix → GitHub Release
-  → (parallel) GHCR image push.
-- `security.yml` — Semgrep + Trivy (fs + image), on tag push + weekly.
+## Working conventions
 
-All third-party Actions are pinned to commit SHAs (see
-`.github/workflows/*.yml`); `make github-action-bump` re-pins via `pinact`.
-
-## Deployment: two interfaces, kept in sync
-
-`k8s/` (plain, numbered by apply order) and `helm/` (flat — chart files
-live directly under `helm/`, not `helm/grepod/`) describe the *same*
-resources. Changing RBAC, config, or storage in one means changing it in
-the other — see their READMEs
-([k8s/README.md](k8s/README.md), [helm/README.md](helm/README.md)) and
-[ARCHITECTURE.md](ARCHITECTURE.md#adding-a-new-kubernetes-resource).
-No `docker-compose.yaml` — Kubernetes/Helm are the only supported
-deployment path (grepod's only job is talking to the Kubernetes API, so a
-standalone Compose stack isn't a meaningful target).
-
-## Conventions / deviations worth knowing
-
-These came out of scaffolding this repo with `.claude/skills/spawn-golang.md`
-and diverge from that skill's generic golden-standard template — don't
-"fix" them back:
-
-- Scripts live in `scripts/`, not `hack/`.
-- The Helm chart is flat (`helm/Chart.yaml`, `helm/templates/`), not
-  nested under `helm/grepod/`.
-- `images/` is kept (with a `.gitkeep`) for future screenshots, even
-  though nothing references it yet.
-- GitHub Actions workflows follow the pinned-SHA / job-naming style of
-  `~/code/servicedesk/.github/workflows`, not ad-hoc `@v4`-style tags.
-
-## Known constraints
-
-Non-goals, current gaps, and what's planned to close them are documented
-in [ARCHITECTURE.md](ARCHITECTURE.md), [DESIGN.md](DESIGN.md) (→
-`DESIGN/01`–`04`), and [RELEASE.md](RELEASE.md) (→ `RELEASE/vX.Y.Z.md`,
-including not-yet-shipped versions) — read those rather than duplicating
-their detail here. In short: one namespace per instance, no built-in auth
-(see [k8s/README.md#exposing-it-safely](k8s/README.md#exposing-it-safely)),
-no restart-safe tailing, no HTTP read/write timeouts yet.
+- Run tests before writing or updating docs — verify behavior, then
+  document it, not the reverse.
+- After implementing something, end that turn with a one-line suggested
+  commit message. Proposing only — never perform the commit.
+- Never run `git commit`/`tag`/`push`/`make release` without an explicit,
+  standalone instruction for that exact action in the moment.
+  Release-flavored phrasing ("cut vX.Y.Z," "ship it") is not authorization
+  to commit. Verify locally, leave changes uncommitted, say what's ready.
