@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"k8s.io/client-go/kubernetes"
@@ -59,6 +60,12 @@ func main() {
 	queue := storage.NewBatchQueue(store, batchSize, batchInterval)
 	defer queue.Close()
 
+	// broadcaster fans each ingested line out to live /api/tail
+	// subscribers ahead of (and independent of) queue's eventual SQLite
+	// flush — see internal/storage/broadcast.go.
+	broadcaster := storage.NewBroadcaster()
+	sink := fanoutSink{queue: queue, broadcaster: broadcaster}
+
 	clientset, err := newInClusterClient()
 	if err != nil {
 		slog.Error("failed to build k8s client", "err", err)
@@ -68,8 +75,10 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mgr := tailer.NewManager(clientset, namespace, queue, includeInit)
+	mgr := tailer.NewManager(clientset, namespace, sink, includeInit)
+	mgrDone := make(chan struct{})
 	go func() {
+		defer close(mgrDone)
 		if err := mgr.Run(ctx); err != nil {
 			slog.Warn("tailer manager stopped", "err", err)
 		}
@@ -79,7 +88,7 @@ func main() {
 	go store.StartRetentionCron(retentionDays, stopCron)
 	defer close(stopCron)
 
-	handler, err := api.New(store, web.TemplatesFS, web.StaticFS, mgr.Ready, defaultSearchDays)
+	handler, err := api.New(store, web.TemplatesFS, web.StaticFS, mgr.Ready, defaultSearchDays, broadcaster)
 	if err != nil {
 		slog.Error("failed to init API handler", "err", err)
 		os.Exit(1)
@@ -99,12 +108,20 @@ func main() {
 		}
 	}()
 
-	waitForShutdown(ctx, cancel, srv)
+	waitForShutdown(ctx, cancel, srv, mgrDone)
 }
 
-func waitForShutdown(ctx context.Context, cancel context.CancelFunc, srv *http.Server) {
+// waitForShutdown blocks for SIGINT or SIGTERM (the latter is what
+// Kubernetes actually sends on pod termination — catching only SIGINT
+// meant grepod never shut down gracefully in a cluster, only under
+// SIGKILL after the grace period). Once triggered, it cancels ctx,
+// drains in-flight HTTP requests, and — critically — waits for mgrDone
+// (the tailer manager's every goroutine having actually exited) before
+// returning, so the caller's deferred queue.Close() can't race a
+// straggling tailer goroutine still trying to Enqueue.
+func waitForShutdown(ctx context.Context, cancel context.CancelFunc, srv *http.Server, mgrDone <-chan struct{}) {
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	<-sigCh
 
 	slog.Info("shutdown signal received, draining...")
@@ -115,7 +132,23 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc, srv *http.S
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Warn("graceful shutdown failed", "err", err)
 	}
+
+	<-mgrDone
 	_ = ctx
+}
+
+// fanoutSink is the tailer.Sink main.go actually wires in: every ingested
+// line goes to both the eventual-SQLite-flush queue and the live-tail
+// broadcaster. Neither queue nor broadcaster know about each other or
+// about tailer — they're composed here, not coupled in either package.
+type fanoutSink struct {
+	queue       *storage.BatchQueue
+	broadcaster *storage.Broadcaster
+}
+
+func (s fanoutSink) Enqueue(l storage.LogLine) {
+	s.queue.Enqueue(l)
+	s.broadcaster.Publish(l)
 }
 
 func newInClusterClient() (kubernetes.Interface, error) {

@@ -51,11 +51,6 @@ Came out of scaffolding via `.claude/skills/spawn-golang.md` — don't
 
 ## Working conventions
 
-- Run tests before writing or updating docs — verify behavior, then
-  document it, not the reverse.
-- After implementing something, end that turn with a one-line suggested
-  commit message. Proposing only — never perform the commit.
-- Never run `git commit`/`tag`/`push`/`make release` without an explicit,
-  standalone instruction for that exact action in the moment.
-  Release-flavored phrasing ("cut vX.Y.Z," "ship it") is not authorization
-  to commit. Verify locally, leave changes uncommitted, say what's ready.
+- Run tests before writing or updating docs — verify behavior, then document it, not the reverse.
+- After implementing something, end that turn with a one-line suggested commit message. Proposing only — never perform the commit.
+- Never run `git commit`/`tag`/`push`/`make release` without an explicit, standalone instruction for that exact action in the moment. Release-flavored phrasing ("cut vX.Y.Z," "ship it") is not authorization to commit. Verify locally, leave changes uncommitted, say what's ready.

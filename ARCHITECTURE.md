@@ -7,23 +7,27 @@ This describes the as-built code layout. For *why* each piece exists, see
 
 ```
 cmd/server         entrypoint: wiring, config from env, HTTP server lifecycle
+   │                (owns fanoutSink: one ingested line -> BatchQueue + Broadcaster)
    │
    ├── internal/tailer    watches Pods, streams container logs (client-go)
    │        │
    │        ▼
    ├── internal/storage   BatchQueue (write buffering) + Store (SQLite FTS5)
+   │        │              + Broadcaster (live tail fan-out, since v0.4.0)
    │        ▲
    │        │
-   └── internal/api       HTTP handler: /api/search + static file server
-            │
+   └── internal/api       HTTP handler: /api/search, /api/tail, /healthz,
+            │              /readyz + static file server
             ▼
          web/            embedded search UI (web/templates + web/static)
 ```
 
 Dependencies only point downward/inward: `tailer` and `api` both depend on
 `storage`, but `storage` knows nothing about either of them (`tailer` talks
-to it through the narrow `Sink` interface). `cmd/server` is the only package
-that imports all three.
+to it through the narrow `Sink` interface; `api` reads `Store` and publishes
+nothing). `cmd/server` is the only package that imports all three, and the
+only place `BatchQueue` and `Broadcaster` are composed together
+(`fanoutSink` — see [DESIGN/03](DESIGN/03_design_storage.md#broadcaster-live-tail-fan-out)).
 
 ## Where things go
 
@@ -46,17 +50,24 @@ that imports all three.
    restarted — see [DESIGN/02](DESIGN/02_design_tailer.md)). The goroutine's
    `bufio.Scanner` reads the line.
 3. `ingest()` wraps it in a `storage.LogLine{Pod, Namespace, Container,
-   Timestamp: time.Now(), Content}` and calls `Sink.Enqueue`.
-4. `storage.BatchQueue.Enqueue` pushes it onto an internal channel
-   (non-blocking; dropped with a warning if the channel is full).
-5. The queue's single `run()` goroutine buffers it. When the buffer hits
-   `BATCH_SIZE` (default 200) or `BATCH_INTERVAL` (default 500ms) elapses,
-   `flush()` calls `Store.InsertBatch`.
+   Timestamp: time.Now(), Level: detectLevel(line), Content}` and calls
+   `Sink.Enqueue` — where `Sink` is `cmd/server`'s `fanoutSink`, not
+   `BatchQueue` directly.
+4. `fanoutSink.Enqueue` calls both `storage.BatchQueue.Enqueue` (pushes
+   onto an internal channel, non-blocking, dropped with a warning if full)
+   *and* `storage.Broadcaster.Publish` (fans out to any live `/api/tail`
+   subscribers, immediately — no batching).
+5. The queue's single `run()` goroutine buffers its side. When the buffer
+   hits `BATCH_SIZE` (default 200) or `BATCH_INTERVAL` (default 500ms)
+   elapses, `flush()` calls `Store.InsertBatch`.
 6. `InsertBatch` groups the batch by the line's date, opens (or reuses) that
    day's `logs_YYYY-MM-DD.db`, and inserts into its `fts` FTS5 table inside
    one transaction.
 7. A browser hits `GET /api/search?q=...`. `api.Handler.handleSearch` parses
-   `q`/`start`/`end` and calls `Store.Search`.
+   `q`/`start`/`end` and calls `Store.Search`. (Or `GET /api/tail` —
+   `handleTail` subscribes to the `Broadcaster` directly and streams
+   matching lines as SSE, bypassing SQLite entirely; see
+   [DESIGN/04](DESIGN/04_design_api.md#apitail-v040).)
 8. `Search` attaches every shard file in `[start, end]` to a fresh in-memory
    connection and runs one `UNION ALL … ORDER BY bm25() … LIMIT` query
    across them.

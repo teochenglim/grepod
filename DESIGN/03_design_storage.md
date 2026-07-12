@@ -1,7 +1,8 @@
 # 03 — Storage
 
-`internal/storage` has two collaborators: `BatchQueue` (write buffering) and
-`Store` (the SQLite FTS5 persistence layer).
+`internal/storage` has three collaborators: `BatchQueue` (write buffering),
+`Store` (the SQLite FTS5 persistence layer), and `Broadcaster` (live tail
+fan-out, since v0.4.0).
 
 ## BatchQueue
 
@@ -15,6 +16,40 @@ A single `run()` goroutine owns the actual buffer and flushes it to `Store`
 either when it hits `BATCH_SIZE` (default 200) lines or every
 `BATCH_INTERVAL` (default 500ms) tick, whichever comes first. This bounds
 both memory use and worst-case indexing latency.
+
+## Broadcaster: live tail fan-out
+
+`tailer.Manager.ingest` doesn't call `BatchQueue.Enqueue` directly —
+`cmd/server` wires a `fanoutSink` in front of it (`main.go`, not a
+`storage` type) that calls both `BatchQueue.Enqueue` *and*
+`Broadcaster.Publish` for every line. Neither `BatchQueue` nor
+`Broadcaster` know about each other or about `tailer`; they're composed
+at the top, not coupled to each other. This matters because the two have
+different latency requirements: `BatchQueue` batches for SQLite
+throughput (`BATCH_INTERVAL`, currently 500ms — see
+[v0.8.0](../RELEASE/v0.8.0.md) for the planned move to 15s), while
+`/api/tail` (see [DESIGN/04](04_design_api.md#apitail-v040)) needs lines
+the instant they arrive, not after a flush.
+
+`Broadcaster.Subscribe()` gives each subscriber (one per `/api/tail`
+connection) its own buffered channel (256 lines) and an unsubscribe func;
+`Publish` fans a line out to every current subscriber, holding its mutex
+only for the short non-blocking iteration. Two things distinguish it from
+`BatchQueue.Enqueue`'s already-established "never block, never
+back-pressure the tailer" philosophy:
+
+- **Drop-oldest, not drop-newest.** A full `BatchQueue` channel drops the
+  incoming line (it can't reorder what's already committed to the batch).
+  A full `Broadcaster` subscriber instead evicts its *oldest* buffered
+  line to make room for the new one — for a live viewer, the most recent
+  activity matters more than preserving a gap they've already scrolled
+  past.
+- **No replay.** A subscriber only receives lines published after it
+  subscribed. There's no historical buffer to catch up on — that's what
+  `/api/search` is for.
+
+`SubscriberCount()` exists for [v0.7.0](../RELEASE/v0.7.0.md)'s
+`grepod_tail_subscribers` gauge; it's not load-bearing today.
 
 ## Store: daily-sharded SQLite + FTS5
 

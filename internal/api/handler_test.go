@@ -25,7 +25,7 @@ func newTestHandlerWithSearchDays(t *testing.T, ready bool, defaultSearchDays in
 	}
 	t.Cleanup(store.Close)
 
-	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return ready }, defaultSearchDays)
+	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return ready }, defaultSearchDays, storage.NewBroadcaster())
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}

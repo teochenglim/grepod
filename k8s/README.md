@@ -30,7 +30,7 @@ completeness but pins `minReplicas`/`maxReplicas` to 1 for the same reason.
 | `12-serviceaccount.yaml` | Identity the pod runs as. |
 | `13-role.yaml` | Namespace-scoped `Role`/`RoleBinding`: `get/watch/list` on `pods`, `get` on `pods/log`. Nothing cluster-wide. |
 | `14-pvc.yaml` | 10Gi `ReadWriteOnce` volume for the SQLite shards. |
-| `20-deployment.yaml` | The workload. Edit `image:` before applying. |
+| `20-deployment.yaml` | The workload. Defaults to `ghcr.io/teochenglim/grepod:latest` — edit `image:` if you forked or build locally. See the GHCR visibility note below. |
 | `30-service.yaml` | `ClusterIP` on port 80 → container port 8080. |
 | `31-ingress.yaml` | Optional. Edit `host:` and add auth before exposing outside the cluster — see below. |
 | `32-hpa.yaml` | Optional, capped at 1 replica (see above). |
@@ -53,8 +53,19 @@ kubectl apply -k k8s/
 kubectl apply -k k8s/
 ```
 
-Also update `image:` in `20-deployment.yaml` before applying — it's not
-templated. `make k8s-apply`/`make k8s-delete` run the same `-k` commands.
+`image:` in `20-deployment.yaml` defaults to `ghcr.io/teochenglim/grepod:latest`
+(published by `.github/workflows/release.yml`'s `docker` job on every
+tagged release) — edit it if you forked the repo or build locally
+(`make docker-build`). It's not templated, so this is a direct edit, not
+a Kustomize/values override. `make k8s-apply`/`make k8s-delete` run the
+same `-k` commands.
+
+**GHCR packages published by GitHub Actions default to private.** If
+`ghcr.io/teochenglim/grepod` (or your fork's equivalent) isn't public,
+`kubectl apply` will succeed but the pod will sit in `ImagePullBackOff` —
+either make the package public (repo → Packages → grepod → Package
+settings → Change visibility) or add an `imagePullSecret` referencing a
+token with `read:packages` scope.
 
 Plain `kubectl apply -f k8s/*.yaml` still works if you don't want
 Kustomize — just hand-edit `metadata.namespace` in every file yourself

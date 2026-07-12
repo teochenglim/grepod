@@ -10,7 +10,7 @@ One row per version, newest first. Each links to its detail file in
 | [v0.7.0](RELEASE/v0.7.0.md) | Restart-safe tailing + RED metrics | Not started | `/metrics` moved here from v0.3.0. |
 | [v0.6.0](RELEASE/v0.6.0.md) | Hardening, perf pass, docs catch-up | Not started | |
 | [v0.5.0](RELEASE/v0.5.0.md) | Live tail UI + search UX + level filtering | Not started | |
-| [v0.4.0](RELEASE/v0.4.0.md) | Live tail backend (`/api/tail`) | Not started | |
+| [v0.4.0](RELEASE/v0.4.0.md) | Live tail backend (`/api/tail`) | Ready to tag | Implemented, verified locally, uncommitted. Also fixed a missing-SIGTERM and shutdown-ordering bug — see below. |
 | [v0.3.0](RELEASE/v0.3.0.md) | Observability foundation: health, structured logging, log level | Ready to tag | Implemented, verified locally, uncommitted. |
 | [v0.2.1](RELEASE/v0.2.1.md) | Security workflow fixes | Ready to tag | Committed (`f0579d4`), fixes all 3 jobs that failed on v0.2.0's tag push. |
 | [v0.2.0](RELEASE/v0.2.0.md) | Architecture-driven test suite | Shipped | Tagged. Also fixed 3 real bugs the tests surfaced — see below. |

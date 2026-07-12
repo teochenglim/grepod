@@ -27,7 +27,10 @@ spec:
         fsGroup: 65532
       containers:
         - name: grepod
-          image: "grepod:latest" # replace with your built/pushed image
+          # Published by .github/workflows/release.yml's docker job on
+          # every tagged release. Point this at your own registry/build
+          # if you forked or build locally (`make docker-build`).
+          image: "ghcr.io/teochenglim/grepod:latest"
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

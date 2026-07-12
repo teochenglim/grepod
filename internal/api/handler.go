@@ -6,9 +6,11 @@ package api
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/teochenglim/grepod/internal/storage"
@@ -23,6 +25,7 @@ type Handler struct {
 	index             *template.Template
 	ready             func() bool
 	defaultSearchDays int
+	broadcaster       *storage.Broadcaster
 }
 
 // New builds a Handler. templatesFS and staticFS should be the embedded
@@ -35,8 +38,8 @@ type Handler struct {
 // (overridable at startup via DEFAULT_SEARCH_DAYS — see cmd/server); a
 // value <= 0 falls back to 7, matching RETENTION_DAYS' own default, since
 // searching further back than what's retained by default finds nothing
-// anyway.
-func New(store *storage.Store, templatesFS, staticFS embed.FS, ready func() bool, defaultSearchDays int) (*Handler, error) {
+// anyway. broadcaster feeds /api/tail — see storage.Broadcaster.
+func New(store *storage.Store, templatesFS, staticFS embed.FS, ready func() bool, defaultSearchDays int, broadcaster *storage.Broadcaster) (*Handler, error) {
 	index, err := template.ParseFS(templatesFS, "templates/index.html")
 	if err != nil {
 		return nil, err
@@ -50,9 +53,13 @@ func New(store *storage.Store, templatesFS, staticFS embed.FS, ready func() bool
 	if defaultSearchDays <= 0 {
 		defaultSearchDays = 7
 	}
-	h := &Handler{store: store, mux: http.NewServeMux(), index: index, ready: ready, defaultSearchDays: defaultSearchDays}
+	h := &Handler{
+		store: store, mux: http.NewServeMux(), index: index, ready: ready,
+		defaultSearchDays: defaultSearchDays, broadcaster: broadcaster,
+	}
 
 	h.mux.HandleFunc("/api/search", h.handleSearch)
+	h.mux.HandleFunc("/api/tail", h.handleTail)
 	h.mux.HandleFunc("/healthz", h.handleHealthz)
 	h.mux.HandleFunc("/readyz", h.handleReadyz)
 	h.mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
@@ -154,6 +161,73 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Count:   len(results),
 		Results: results,
 	})
+}
+
+type tailEvent struct {
+	Pod       string `json:"pod"`
+	Namespace string `json:"namespace"`
+	Container string `json:"container"`
+	Timestamp string `json:"timestamp"`
+	Level     string `json:"level"`
+	Content   string `json:"content"`
+}
+
+// handleTail streams newly-ingested lines as Server-Sent Events — chosen
+// over WebSocket because it needs no dependency (stdlib net/http covers
+// it: a flushed, unbounded-duration response) and grepod's tail is
+// inherently one-directional (server pushes; the client's only input is
+// the query params it connected with). Optional pod/container filters
+// require an exact match; q is a case-insensitive substring match against
+// the line content. Filtering happens here, per connection — the
+// broadcaster itself fans every line out to every subscriber unfiltered.
+func (h *Handler) handleTail(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSONError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+
+	podFilter := r.URL.Query().Get("pod")
+	containerFilter := r.URL.Query().Get("container")
+	qFilter := strings.ToLower(r.URL.Query().Get("q"))
+
+	ch, unsubscribe := h.broadcaster.Subscribe()
+	defer unsubscribe()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	for {
+		select {
+		case l, ok := <-ch:
+			if !ok {
+				return
+			}
+			if podFilter != "" && l.Pod != podFilter {
+				continue
+			}
+			if containerFilter != "" && l.Container != containerFilter {
+				continue
+			}
+			if qFilter != "" && !strings.Contains(strings.ToLower(l.Content), qFilter) {
+				continue
+			}
+			data, err := json.Marshal(tailEvent{
+				Pod: l.Pod, Namespace: l.Namespace, Container: l.Container,
+				Timestamp: l.Timestamp.Format(time.RFC3339Nano), Level: l.Level, Content: l.Content,
+			})
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -10,6 +10,7 @@ It wraps a `*storage.Store` and the `web` package's two embedded
 | Route | Method | Purpose |
 | :--- | :--- | :--- |
 | `/api/search` | GET | Full-text search over one or more days of logs. |
+| `/api/tail` | GET | Live-streams newly-ingested lines (SSE) — see below. |
 | `/healthz` | GET | Liveness — see below. |
 | `/readyz` | GET | Readiness — see below. |
 | `/static/*` | GET | File server over the embedded `web/static/` assets (CSS/JS/favicon). |
@@ -40,6 +41,41 @@ Errors are always JSON (`{"error": "..."}`) with an appropriate 4xx/5xx
 status — see `writeJSONError`. There's no auth: the handler assumes the
 Service is only reachable inside the cluster (or behind whatever Ingress
 auth you layer on — see `k8s/README.md`).
+
+## `/api/tail` (v0.4.0)
+
+Server-Sent Events, not WebSocket — chosen because it needs no dependency
+(stdlib `net/http`'s `http.Flusher` covers it) and grepod's tail is
+inherently one-directional: the server pushes lines, the client's only
+input is the query params it connected with. No UI yet ([v0.5.0](../RELEASE/v0.5.0.md)
+wires it into the page); this is the backend surface.
+
+Query params (all optional, ANDed together): `pod` (exact match),
+`container` (exact match), `q` (case-insensitive substring match against
+the line content). Filtering happens per-connection in the handler, not
+in the fan-out itself — see [DESIGN/03](03_design_storage.md#broadcaster-live-tail-fan-out).
+
+Each event is `data: <json>\n\n` where the JSON is `{pod, namespace,
+container, timestamp, level, content}` — deliberately not
+`storage.SearchResult`'s shape (no `snippet`/`rank`; those are
+search-specific, meaningless for a live line that hasn't been ranked
+against anything).
+
+No replay: a client only sees lines published *after* it subscribes.
+There's no buffering-before-connect the way `/api/search` can look
+backward — that's what search is for.
+
+A slow or disconnected client never blocks ingestion (see
+[DESIGN/03](03_design_storage.md#broadcaster-live-tail-fan-out)); the
+handler's own loop exits via `r.Context().Done()` on client disconnect,
+unsubscribing from the broadcaster.
+
+**Interacts with [v0.8.0](../RELEASE/v0.8.0.md)'s planned `WriteTimeout`**:
+a blanket `http.Server.WriteTimeout` would kill every `/api/tail`
+connection after that duration, since it's long-lived by design. That
+release needs to either exempt streaming routes or use per-request
+`http.ResponseController.SetWriteDeadline` instead of a server-wide
+timeout — flagged here so it isn't rediscovered cold.
 
 ## `/healthz` + `/readyz`
 

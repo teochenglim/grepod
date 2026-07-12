@@ -197,6 +197,31 @@ func TestStopPod_CancelsOnlyThatPodsContainers(t *testing.T) {
 	}
 }
 
+// Shutdown correctness: Run() waits on m.wg before returning, so a caller
+// can safely close a wrapped Sink (e.g. storage.BatchQueue) right after —
+// this test exercises the WaitGroup mechanics directly, since driving it
+// through the full informer-backed Run() would be significantly more
+// setup for the same guarantee.
+func TestManager_WaitGroupDrainsWhenContainerContextCancelled(t *testing.T) {
+	mgr, _ := newTestManager()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	mgr.reconcilePod(ctx, podWithContainer("web-1", "app", 0))
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		mgr.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the tailContainer goroutine to exit after context cancellation")
+	}
+}
+
 // DESIGN/02: ingest scans newline-delimited lines and stamps each with the
 // pod/container/namespace it belongs to plus an ingestion timestamp.
 func TestIngest_EnqueuesEachLineWithMetadata(t *testing.T) {

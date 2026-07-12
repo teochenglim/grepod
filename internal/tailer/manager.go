@@ -53,6 +53,7 @@ type Manager struct {
 	cancels       map[containerKey]context.CancelFunc
 	restartCounts map[containerKey]int32
 
+	wg    sync.WaitGroup // tracks every spawned tailContainer goroutine, so Run can wait for a full drain on shutdown
 	ready atomic.Bool
 }
 
@@ -69,7 +70,11 @@ func NewManager(clientset kubernetes.Interface, namespace string, sink Sink, inc
 	}
 }
 
-// Run starts the Pod informer and blocks until ctx is cancelled.
+// Run starts the Pod informer and blocks until ctx is cancelled. On
+// cancellation it additionally blocks until every spawned tailContainer
+// goroutine has actually exited, so a caller that waits for Run to return
+// can safely assume no goroutine will call Sink.Enqueue again afterward
+// (e.g. before closing a storage.BatchQueue wrapped by that Sink).
 func (m *Manager) Run(ctx context.Context) error {
 	factory := informers.NewSharedInformerFactoryWithOptions(
 		m.clientset,
@@ -117,6 +122,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	m.ready.Store(allSynced)
 
 	<-ctx.Done()
+	m.wg.Wait() // block until every tailContainer goroutine has actually exited
 	return nil
 }
 
@@ -168,6 +174,7 @@ func (m *Manager) startContainer(parent context.Context, podName, containerName 
 	m.restartCounts[key] = restartCount
 	m.mu.Unlock()
 
+	m.wg.Add(1)
 	go m.tailContainer(ctx, podName, containerName)
 }
 
@@ -202,6 +209,7 @@ func (m *Manager) stopPod(podName string) {
 // then streams live logs with Follow:true, retrying with capped
 // exponential backoff whenever the stream drops, until ctx is cancelled.
 func (m *Manager) tailContainer(ctx context.Context, podName, containerName string) {
+	defer m.wg.Done()
 	m.fetchPreviousLogs(ctx, podName, containerName)
 
 	backoff := initialBackoff
