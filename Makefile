@@ -15,7 +15,8 @@ help: ## Show this menu
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Release cycle:"
-	@echo "  make release VERSION=x.y.z   # bump VERSION, commit, tag, push -> triggers GitHub Actions"
+	@echo "  make release VERSION=x.y.z   # bump VERSION, tag, push the tag -> triggers GitHub Actions"
+	@echo "                                # (commit/push your actual work yourself, before or after)"
 
 ## --- develop ---------------------------------------------------------------
 
@@ -99,19 +100,11 @@ bump: ## Rewrite the VERSION file (VERSION=x.y.z required)
 	@echo "$(VERSION)" > VERSION
 	@echo "VERSION -> $(VERSION)"
 
-.PHONY: tag
-tag: ## Create and push a git tag for the current VERSION
-	git tag v$(VERSION_CURRENT)
-	git push origin v$(VERSION_CURRENT)
-	@echo "Tagged and pushed v$(VERSION_CURRENT)"
-
 .PHONY: release
-release: ## Bump, commit, tag, push - triggers GitHub Actions (VERSION=x.y.z required)
+release: ## Bump VERSION, tag HEAD, and push the tag - triggers GitHub Actions (VERSION=x.y.z required)
 	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=x.y.z"; exit 1; fi
 	$(MAKE) bump VERSION=$(VERSION)
-	git add VERSION
-	git diff --cached --quiet -- VERSION || git commit -m "release: v$(VERSION)"
 	git tag v$(VERSION)
-	git push origin HEAD
 	git push origin v$(VERSION)
 	@echo "Released v$(VERSION) - GitHub Actions will build and publish."
+	@echo "VERSION was rewritten but not committed - the release itself doesn't depend on it (the tag is the source of truth), but commit it yourself whenever convenient."

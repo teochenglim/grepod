@@ -10,10 +10,11 @@ One row per version, newest first. Each links to its detail file in
 | [v0.7.0](RELEASE/v0.7.0.md) | Restart-safe tailing + RED metrics | Not started | `/metrics` moved here from v0.3.0. |
 | [v0.6.0](RELEASE/v0.6.0.md) | Hardening, perf pass, docs catch-up | Not started | |
 | [v0.5.0](RELEASE/v0.5.0.md) | Live tail UI + search UX + level filtering | Not started | |
-| [v0.4.0](RELEASE/v0.4.0.md) | Live tail backend (`/api/tail`) | Ready to tag | Implemented, verified locally, uncommitted. Also fixed a missing-SIGTERM and shutdown-ordering bug — see below. |
-| [v0.3.0](RELEASE/v0.3.0.md) | Observability foundation: health, structured logging, log level | Ready to tag | Implemented, verified locally, uncommitted. |
-| [v0.2.1](RELEASE/v0.2.1.md) | Security workflow fixes | Ready to tag | Committed (`f0579d4`), fixes all 3 jobs that failed on v0.2.0's tag push. |
-| [v0.2.0](RELEASE/v0.2.0.md) | Architecture-driven test suite | Shipped | Tagged. Also fixed 3 real bugs the tests surfaced — see below. |
+| [v0.4.1](RELEASE/v0.4.1.md) | Release tooling fix: no more auto-generated bump commits | Ready to tag | Implemented, verified locally, uncommitted. |
+| [v0.4.0](RELEASE/v0.4.0.md) | Live tail backend (`/api/tail`) | Shipped | Tagged. Also fixed a missing-SIGTERM and shutdown-ordering bug — see its file. |
+| [v0.3.0](RELEASE/v0.3.0.md) | Observability foundation: health, structured logging, log level | Shipped | Tagged. |
+| [v0.2.1](RELEASE/v0.2.1.md) | Security workflow fixes | Shipped | Tagged. Fixed all 3 jobs that failed on v0.2.0's tag push. |
+| [v0.2.0](RELEASE/v0.2.0.md) | Architecture-driven test suite | Shipped | Tagged. Also fixed 3 real bugs the tests surfaced — see its file. |
 | [v0.1.0](RELEASE/v0.1.0.md) | Core tail-index-search loop | Shipped | Tagged and pushed. |
 
 ## Roadmap to 1.0.0
@@ -35,11 +36,30 @@ than batched into one big jump. Scope was picked deliberately:
 
 ## Cutting a release
 
+**Commit and push your own work first** — with a real commit message,
+since that's what ends up on the tag:
+
+```sh
+git add -A && git commit -m "..." && git push origin main
+```
+
+Then:
+
 ```sh
 make release VERSION=x.y.z
 ```
 
-Bumps `VERSION`, commits, tags `vx.y.z`, and pushes — which triggers
-`.github/workflows/release.yml` (cross-platform binaries + GitHub Release +
-GHCR image). See each version's file in `RELEASE/` for what's actually in
-scope.
+This bumps `VERSION` (rewritten, not committed — the release pipeline
+itself doesn't read the file; `release.yml` derives everything from
+`github.ref_name`, the git tag, so this is purely local convenience for
+`make version`/`make docker-build`/the help banner), tags whatever's
+currently at `HEAD`, and pushes the tag. Nothing else — no commit, no
+`git push origin HEAD`. Since it doesn't create a commit, the tag lands
+directly on the commit you just pushed, so GitHub Actions' run list shows
+*your* message, not a generic bump commit's.
+
+Triggers `.github/workflows/release.yml` (cross-platform binaries +
+GitHub Release + GHCR image, multi-arch since v0.4.0's CI fix). See each
+version's file in `RELEASE/` for what's actually in scope. See
+[RELEASE/v0.4.1](RELEASE/v0.4.1.md) for how this flow settled here after
+three earlier iterations.
