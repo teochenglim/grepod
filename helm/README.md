@@ -13,12 +13,17 @@ helm upgrade --install grepod ./helm \
   --set namespace=kube-system
 ```
 
-**The value you need to override is `namespace`** — it's the *one*
-namespace grepod watches and tails logs from, and it must match `--namespace`
-above (they're kept as two separate settings because Helm's own
-`--namespace` only controls where the *chart's resources* are created; it
-has no bearing on which namespace the running app watches — `namespace`
-in `values.yaml` is what's actually read into the `NAMESPACE` env var).
+**The value you need to override is `namespace`** — it controls where
+this release's resources (`Role`, `ServiceAccount`, `Deployment`, etc.)
+get created, and must match `--namespace` above (Helm requires both; there
+isn't a way to derive one from the other). You do **not** need to keep
+anything else in sync: grepod always watches whichever namespace it's
+actually running in — `NAMESPACE` is sourced from the pod's own metadata
+via the Kubernetes Downward API (`fieldRef: metadata.namespace`) in
+`templates/deployment.yaml`, not a value read from `values.yaml`. That
+namespace is always exactly `.Values.namespace`, since that's where Helm
+just deployed it — there's no separate value that could drift.
+
 grepod is namespace-scoped by design (see
 [DESIGN/01](../DESIGN/01_design_overview.md#non-goals)) — install one
 release per namespace you want indexed, e.g.:
@@ -33,17 +38,19 @@ helm upgrade --install grepod-payments ./helm \
 
 Point `--set image.repository=...,image.tag=...` at wherever you built or
 pushed the image (`make docker-build`, or the `ghcr.io/teochenglim/grepod`
-image published by the release CI on a tagged push).
+image published by `.github/workflows/release.yml`'s `docker` job on a
+tagged push).
 
 ## Values reference
 
 | Key | Default | Notes |
 | :--- | :--- | :--- |
-| `namespace` | `default` | **Override this.** The namespace grepod watches; must match `--namespace`. |
+| `namespace` | `default` | **Override this.** Where this release's resources are created; must match `--namespace`. grepod then watches this same namespace automatically (Downward API) — nothing else to set. |
 | `image.repository` / `image.tag` / `image.pullPolicy` | `grepod` / `latest` / `IfNotPresent` | Where to pull the image from. |
 | `retentionDays` | `7` | Days of logs kept before a shard is deleted. |
 | `batchSize` / `batchInterval` | `200` / `500ms` | Write-batching thresholds — see [DESIGN/03](../DESIGN/03_design_storage.md). |
 | `includeInitContainers` | `false` | Also tail init containers. |
+| `defaultSearchDays` | `7` | How many days back `/api/search` looks when the caller omits `start`. |
 | `storageSize` / `storageClassName` | `10Gi` / `""` (cluster default) | The `ReadWriteOnce` PVC backing `/data`. |
 | `service.type` / `.port` / `.targetPort` | `ClusterIP` / `80` / `8080` | |
 | `ingress.enabled` | `false` | See "Exposing it safely" below before enabling. |

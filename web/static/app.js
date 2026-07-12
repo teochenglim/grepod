@@ -9,7 +9,16 @@
   function todayStr() {
     return new Date().toISOString().slice(0, 10);
   }
-  startEl.value = todayStr();
+  function daysAgoStr(n) {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    return d.toISOString().slice(0, 10);
+  }
+  // Matches the server's own default search window (see
+  // internal/api/handler.go's defaultSearchWindowDays) so the UI's
+  // initial state isn't narrower than what a bare /api/search?q= call
+  // already returns.
+  startEl.value = daysAgoStr(6);
   endEl.value = todayStr();
 
   async function runSearch() {

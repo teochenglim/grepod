@@ -19,9 +19,18 @@ both memory use and worst-case indexing latency.
 ## Store: daily-sharded SQLite + FTS5
 
 One SQLite database file per calendar day: `logs_YYYY-MM-DD.db`, each
-containing a single `fts` virtual table (`FTS5`). Sharding by day rather
-than one giant table makes two operations cheap that would otherwise be
-expensive at scale:
+containing a single `fts` virtual table (`FTS5`) with columns `pod`,
+`namespace`, `container`, `timestamp`, `level`, `line` — all `UNINDEXED`
+except `line` itself, which FTS5 tokenizes and indexes.
+
+**Breaking, pre-1.0:** `level` was added in v0.3.0. Shard files from
+before that release don't have the column; no migration is attempted —
+delete and re-ingest, same as any pre-1.0 schema change (grepod has no
+compatibility guarantee before v1.0.0 — see
+[RELEASE/v1.0.0](../RELEASE/v1.0.0.md)).
+
+Sharding by day rather than one giant table makes two operations cheap
+that would otherwise be expensive at scale:
 
 - **Retention** — deleting a day's logs is `os.Remove` on that day's file
   (plus its `-wal`/`-shm` siblings), not a `DELETE ... WHERE timestamp <

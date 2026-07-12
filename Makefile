@@ -54,12 +54,12 @@ docker-build: ## Build the grepod Docker image
 	docker build -t $(IMAGE) .
 
 .PHONY: k8s-apply
-k8s-apply: ## Apply the k8s/ manifests to the current kubectl context
-	kubectl apply -f k8s/
+k8s-apply: ## Apply the k8s/ manifests via Kustomize to the current kubectl context
+	kubectl apply -k k8s/
 
 .PHONY: k8s-delete
-k8s-delete: ## Delete the k8s/ manifests from the current kubectl context
-	kubectl delete -f k8s/
+k8s-delete: ## Delete the k8s/ manifests via Kustomize from the current kubectl context
+	kubectl delete -k k8s/
 
 .PHONY: k8s-logs
 k8s-logs: ## Tail logs from the grepod deployment in k8s

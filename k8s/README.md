@@ -25,7 +25,7 @@ completeness but pins `minReplicas`/`maxReplicas` to 1 for the same reason.
 
 | File | What |
 | :--- | :--- |
-| `10-configmap.yaml` | Non-secret config (namespace to watch, retention, batching). |
+| `10-configmap.yaml` | Non-secret config (retention, batching, default search window). Namespace is *not* here — see below. |
 | `11-secret.example.yaml` | Placeholder — grepod needs no secrets today. Copy to `11-secret.yaml` (gitignored) if you add any (e.g. Ingress auth credentials). |
 | `12-serviceaccount.yaml` | Identity the pod runs as. |
 | `13-role.yaml` | Namespace-scoped `Role`/`RoleBinding`: `get/watch/list` on `pods`, `get` on `pods/log`. Nothing cluster-wide. |
@@ -37,13 +37,34 @@ completeness but pins `minReplicas`/`maxReplicas` to 1 for the same reason.
 
 ## Applying
 
+grepod always watches whichever namespace it's deployed into — `NAMESPACE`
+is sourced from the pod's own metadata via the Kubernetes Downward API in
+`20-deployment.yaml` (`fieldRef: metadata.namespace`), not a config value
+you set. So the *only* thing to decide is which namespace to deploy into,
+and `k8s/kustomization.yaml` makes that a one-line change instead of
+hand-editing `metadata.namespace` across every file:
+
 ```sh
-# Edit metadata.namespace in every file (default: "default") and NAMESPACE
-# in 10-configmap.yaml to the namespace you want grepod to watch, then:
-kubectl apply -f k8s/
+# Deploy into the default namespace baked into kustomization.yaml:
+kubectl apply -k k8s/
+
+# Or target a different namespace:
+(cd k8s && kustomize edit set namespace payments)
+kubectl apply -k k8s/
 ```
 
-Or via the Makefile: `make k8s-apply` / `make k8s-delete`.
+Also update `image:` in `20-deployment.yaml` before applying — it's not
+templated. `make k8s-apply`/`make k8s-delete` run the same `-k` commands.
+
+Plain `kubectl apply -f k8s/*.yaml` still works if you don't want
+Kustomize — just hand-edit `metadata.namespace` in every file yourself
+first.
+
+Two files are deliberately **not** in `kustomization.yaml`'s `resources:`
+(add them yourself if you want them): `11-secret.example.yaml` (a
+template, not meant to be applied as-is) and `31-ingress.yaml`/
+`32-hpa.yaml` (both opt-in — see "Exposing it safely" below and the
+replica note above).
 
 ## Exposing it safely
 

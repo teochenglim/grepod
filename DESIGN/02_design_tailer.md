@@ -7,7 +7,10 @@ log streaming.
 
 `Manager.Run` starts a `client-go` `SharedInformerFactory` scoped to a single
 namespace (`informers.WithNamespace(namespace)`). Add/Update events call
-`reconcilePod`; Delete events call `stopPod`.
+`reconcilePod`; Delete events call `stopPod`. Once the informer's initial
+cache sync completes, `Manager.Ready()` flips to `true` — the signal
+`internal/api`'s `/readyz` reports (see
+[DESIGN/04](04_design_api.md#healthz--readyz)).
 
 ## Reconciliation
 
@@ -49,6 +52,19 @@ not attach a timestamp to raw (non-`--timestamps`) log output, so ingestion
 time is what grepod indexes and displays. `Sink` is satisfied by
 `storage.BatchQueue` (see [Storage](03_design_storage.md)); the tailer never
 talks to SQLite directly.
+
+Each line also gets a best-effort `Level` via `detectLevel` (`level.go`):
+a single regex, `\b(FATAL|ERROR|WARNING|WARN|INFO|DEBUG|TRACE)\b`
+(case-insensitive, `WARNING` normalized to `WARN`), matched against the
+raw line. No log-format parsing, no per-runtime/framework special-casing —
+if a recognizable token isn't present as a whole word, `Level` is `""`
+rather than guessed. This is a heuristic, not a contract: it will miss
+levels embedded in structured formats it doesn't specifically look for
+(e.g. a bare JSON `{"lvl":"w",...}`) and false-positive on the word
+appearing in a message that isn't actually indicating severity. Good
+enough for "mostly right, never silently wrong" — see
+[DESIGN/04](04_design_api.md) for how it's surfaced, and
+[v0.5.0](../RELEASE/v0.5.0.md) for the UI built on top of it.
 
 ## Adding a new event source
 

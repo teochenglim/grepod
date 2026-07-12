@@ -6,7 +6,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,7 +23,13 @@ import (
 )
 
 func main() {
+	// NAMESPACE and POD_NAME come from the Kubernetes Downward API
+	// (fieldRef: metadata.namespace/metadata.name) in k8s/helm's
+	// Deployment manifests, not manual config — grepod always watches
+	// its own namespace, so this can never drift from where it was
+	// actually deployed.
 	namespace := envOr("NAMESPACE", "default")
+	podName := envOr("POD_NAME", "")
 	dataDir := envOr("DATA_DIR", "/data")
 	addr := envOr("LISTEN_ADDR", ":8080")
 
@@ -31,13 +37,22 @@ func main() {
 	batchSize := envInt("BATCH_SIZE", 200)
 	batchInterval := envDuration("BATCH_INTERVAL", 500*time.Millisecond)
 	includeInit := envBool("INCLUDE_INIT_CONTAINERS", false)
+	defaultSearchDays := envInt("DEFAULT_SEARCH_DAYS", 7)
 
-	log.Printf("grepod starting: namespace=%s dataDir=%s retentionDays=%d batchSize=%d batchInterval=%s",
-		namespace, dataDir, retentionDays, batchSize, batchInterval)
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: parseLogLevel(envOr("LOG_LEVEL", "info")),
+	})).With("pod_namespace", namespace, "pod_name", podName)
+	slog.SetDefault(logger)
+
+	slog.Info("grepod starting",
+		"namespace", namespace, "data_dir", dataDir,
+		"retention_days", retentionDays, "batch_size", batchSize, "batch_interval", batchInterval,
+		"default_search_days", defaultSearchDays)
 
 	store, err := storage.NewStore(dataDir)
 	if err != nil {
-		log.Fatalf("failed to init storage: %v", err)
+		slog.Error("failed to init storage", "err", err)
+		os.Exit(1)
 	}
 	defer store.Close()
 
@@ -46,7 +61,8 @@ func main() {
 
 	clientset, err := newInClusterClient()
 	if err != nil {
-		log.Fatalf("failed to build k8s client: %v", err)
+		slog.Error("failed to build k8s client", "err", err)
+		os.Exit(1)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -55,7 +71,7 @@ func main() {
 	mgr := tailer.NewManager(clientset, namespace, queue, includeInit)
 	go func() {
 		if err := mgr.Run(ctx); err != nil {
-			log.Printf("tailer manager stopped: %v", err)
+			slog.Warn("tailer manager stopped", "err", err)
 		}
 	}()
 
@@ -63,9 +79,10 @@ func main() {
 	go store.StartRetentionCron(retentionDays, stopCron)
 	defer close(stopCron)
 
-	handler, err := api.New(store, web.TemplatesFS, web.StaticFS)
+	handler, err := api.New(store, web.TemplatesFS, web.StaticFS, mgr.Ready, defaultSearchDays)
 	if err != nil {
-		log.Fatalf("failed to init API handler: %v", err)
+		slog.Error("failed to init API handler", "err", err)
+		os.Exit(1)
 	}
 
 	srv := &http.Server{
@@ -75,9 +92,10 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("listening on %s", addr)
+		slog.Info("listening", "addr", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("http server failed: %v", err)
+			slog.Error("http server failed", "err", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -89,13 +107,13 @@ func waitForShutdown(ctx context.Context, cancel context.CancelFunc, srv *http.S
 	signal.Notify(sigCh, os.Interrupt)
 	<-sigCh
 
-	log.Println("shutdown signal received, draining...")
+	slog.Info("shutdown signal received, draining...")
 	cancel()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("graceful shutdown failed: %v", err)
+		slog.Warn("graceful shutdown failed", "err", err)
 	}
 	_ = ctx
 }
@@ -106,6 +124,21 @@ func newInClusterClient() (kubernetes.Interface, error) {
 		return nil, err
 	}
 	return kubernetes.NewForConfig(cfg)
+}
+
+// parseLogLevel maps LOG_LEVEL to a slog.Level; an unrecognized value
+// falls back to Info rather than failing startup over a typo.
+func parseLogLevel(v string) slog.Level {
+	switch v {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 func envOr(key, def string) string {

@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Rewrites metadata.namespace (and same-namespace RBAC references) on
+# every resource below — this is the one place to change to deploy
+# grepod into a different namespace. See k8s/README.md.
+namespace: default
+
+resources:
+- 10-configmap.yaml
+- 12-serviceaccount.yaml
+- 13-role.yaml
+- 14-pvc.yaml
+- 20-deployment.yaml
+- 30-service.yaml
+
+# Not included above — both are opt-in (add them to resources: yourself
+# if you want them):
+#   - 11-secret.example.yaml: a template, not meant to be applied as-is.
+#   - 31-ingress.yaml / 32-hpa.yaml: optional; see k8s/README.md.

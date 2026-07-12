@@ -2,14 +2,18 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: grepod-config
-  namespace: default # the namespace grepod watches AND is deployed into
+  namespace: default # the namespace grepod is deployed into AND watches
   labels:
     app.kubernetes.io/name: grepod
 data:
-  NAMESPACE: "default" # must match metadata.namespace above
+  # NAMESPACE and POD_NAME are intentionally not here — they're sourced
+  # from the Kubernetes Downward API directly on the container in
+  # 20-deployment.yaml, so grepod's watched namespace can never drift
+  # from the namespace it's actually deployed into.
   RETENTION_DAYS: "7"
   BATCH_SIZE: "200"
   BATCH_INTERVAL: "500ms"
   INCLUDE_INIT_CONTAINERS: "false"
+  DEFAULT_SEARCH_DAYS: "7"
   DATA_DIR: "/data"
   LISTEN_ADDR: ":8080"

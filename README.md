@@ -37,10 +37,12 @@ kubeconfig — see below.)
 
 ### Kubernetes
 
-Plain manifests:
+Plain manifests, via Kustomize (deploys into the `default` namespace;
+`kustomize edit set namespace <ns>` from `k8s/` to change it — grepod then
+watches whichever namespace it's deployed into automatically):
 
 ```sh
-kubectl apply -f k8s/    # edit metadata.namespace + NAMESPACE first — see k8s/README.md
+kubectl apply -k k8s/
 ```
 
 Helm:
@@ -58,13 +60,16 @@ for the full story, including why grepod is one `Deployment` per namespace
 
 | Env var | Default | Notes |
 | :--- | :--- | :--- |
-| `NAMESPACE` | `default` | The namespace grepod watches. |
+| `NAMESPACE` | `default` | The namespace grepod watches. In k8s/Helm this is sourced from the pod's own metadata via the Downward API — set it directly only for bare `go run`/`docker run`. |
+| `POD_NAME` | *(empty)* | Tagged onto grepod's own structured logs. Downward API-sourced in k8s/Helm; harmless if unset locally. |
 | `DATA_DIR` | `/data` | Where daily SQLite shards are written. |
 | `LISTEN_ADDR` | `:8080` | HTTP listen address. |
+| `LOG_LEVEL` | `info` | grepod's own log verbosity: `debug`/`info`/`warn`/`error`. |
 | `RETENTION_DAYS` | `7` | Shards older than this are deleted nightly at 03:00 local time. |
 | `BATCH_SIZE` | `200` | Lines buffered before a write flush. |
 | `BATCH_INTERVAL` | `500ms` | Max time buffered lines wait before a flush. |
 | `INCLUDE_INIT_CONTAINERS` | `false` | Also tail init containers. |
+| `DEFAULT_SEARCH_DAYS` | `7` | How many days back `/api/search` looks when the caller omits `start`. |
 
 ## Features
 
@@ -73,11 +78,18 @@ for the full story, including why grepod is one `Deployment` per namespace
 - **Crash-safe.** Fetches a crashed container's previous logs before
   resuming the live stream, so a panic's last lines are never lost.
 - **Full-text search**, not just `grep` — SQLite FTS5 with `bm25()`
-  ranking and highlighted snippets, across a date range.
+  ranking and highlighted snippets, across a date range (defaults to the
+  past 7 days, configurable).
+- **Best-effort log level detection.** Each ingested line is scanned for
+  a recognizable level token (`FATAL`/`ERROR`/`WARN`/`INFO`/`DEBUG`/
+  `TRACE`) and stored alongside it — empty when nothing matches, never
+  guessed.
 - **Zero external dependencies.** No Loki, no message queue, no separate
   database — one binary, one PVC.
 - **Automatic retention.** Old shards are deleted (and remaining ones
   vacuumed) on a nightly cron.
+- **`/healthz` + `/readyz`**, structured JSON logs (`log/slog`) for
+  grepod's own operation — see [DESIGN/04](DESIGN/04_design_api.md).
 
 See [DESIGN.md](DESIGN.md) for how it's built and
 [ARCHITECTURE.md](ARCHITECTURE.md) for where things live in the code.

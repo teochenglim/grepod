@@ -223,6 +223,24 @@ func TestIngest_EnqueuesEachLineWithMetadata(t *testing.T) {
 	}
 }
 
+// DESIGN/02: ingest surfaces the detected level (or empty) per line.
+func TestIngest_DetectsLevelPerLine(t *testing.T) {
+	mgr, sink := newTestManager()
+
+	mgr.ingest("web-1", "app", io.NopCloser(strings.NewReader("[ERROR] boom\nno level here\n")))
+
+	lines := sink.snapshot()
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 enqueued lines, got %d", len(lines))
+	}
+	if lines[0].Level != "ERROR" {
+		t.Errorf("line 0: Level = %q, want %q", lines[0].Level, "ERROR")
+	}
+	if lines[1].Level != "" {
+		t.Errorf("line 1: Level = %q, want empty", lines[1].Level)
+	}
+}
+
 // DESIGN/02: reconnects back off exponentially, capped at 5s.
 func TestNextBackoff_DoublesAndCaps(t *testing.T) {
 	cases := []struct {

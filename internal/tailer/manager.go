@@ -10,8 +10,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -51,6 +52,8 @@ type Manager struct {
 	mu            sync.Mutex
 	cancels       map[containerKey]context.CancelFunc
 	restartCounts map[containerKey]int32
+
+	ready atomic.Bool
 }
 
 // NewManager creates a Manager for the given namespace. If includeInit is
@@ -106,10 +109,22 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 
 	factory.Start(ctx.Done())
-	factory.WaitForCacheSync(ctx.Done())
+	synced := factory.WaitForCacheSync(ctx.Done())
+	allSynced := true
+	for _, ok := range synced {
+		allSynced = allSynced && ok
+	}
+	m.ready.Store(allSynced)
 
 	<-ctx.Done()
 	return nil
+}
+
+// Ready reports whether the pod informer's cache has completed its
+// initial sync at least once. Safe for concurrent use — intended for a
+// readiness probe.
+func (m *Manager) Ready() bool {
+	return m.ready.Load()
 }
 
 // reconcilePod ensures every (init) container in pod has a running tailer
@@ -200,8 +215,8 @@ func (m *Manager) tailContainer(ctx context.Context, podName, containerName stri
 			return
 		}
 		if err != nil {
-			log.Printf("tailer: stream for pod=%s container=%s dropped: %v (retrying in %s)",
-				podName, containerName, err, backoff)
+			slog.Warn("tailer stream dropped, retrying",
+				"pod", podName, "container", containerName, "err", err, "backoff", backoff)
 		}
 
 		select {
@@ -264,12 +279,14 @@ func (m *Manager) ingest(podName, containerName string, r io.ReadCloser) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
+		line := sc.Text()
 		m.sink.Enqueue(storage.LogLine{
 			Pod:       podName,
 			Namespace: m.namespace,
 			Container: containerName,
 			Timestamp: time.Now(),
-			Content:   sc.Text(),
+			Level:     detectLevel(line),
+			Content:   line,
 		})
 	}
 }

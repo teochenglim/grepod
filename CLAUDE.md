@@ -35,8 +35,7 @@ patterns can't reach outside the directory of the file that declares them.
 ## Commands
 
 `make` with no args prints every target. `make release VERSION=x.y.z`
-triggers the tag-driven release CI — see [RELEASE.md](RELEASE.md) before
-using it.
+triggers the tag-driven release CI — see [RELEASE.md](RELEASE.md) before using it.
 
 ## Conventions / deviations from the golden template
 

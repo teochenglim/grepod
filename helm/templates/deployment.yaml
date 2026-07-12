@@ -36,6 +36,19 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          env:
+            # Downward API: always exactly the namespace/pod this
+            # container is actually running in — can't drift from
+            # .Values.namespace the way a manually-set ConfigMap value
+            # could.
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
           envFrom:
             - configMapRef:
                 name: {{ include "grepod.fullname" . }}-config
@@ -46,13 +59,13 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           readinessProbe:
             httpGet:
-              path: /
+              path: /readyz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: http
             initialDelaySeconds: 15
             periodSeconds: 20

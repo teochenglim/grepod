@@ -3,7 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +21,7 @@ type SearchResult struct {
 	Namespace string  `json:"namespace"`
 	Container string  `json:"container"`
 	Timestamp string  `json:"timestamp"`
+	Level     string  `json:"level"`
 	Snippet   string  `json:"snippet"`
 	Rank      float64 `json:"rank"`
 }
@@ -54,12 +55,17 @@ func (s *Store) dbPath(date string) string {
 	return filepath.Join(s.dataDir, fmt.Sprintf("logs_%s.db", date))
 }
 
+// Breaking, pre-1.0: this schema gained the `level` column in v0.3.0.
+// Existing shard files predating that change won't have it — no
+// migration is attempted; delete and re-ingest, same as any other
+// pre-1.0 schema change (see RELEASE/v0.3.0.md).
 const schema = `
 CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(
 	pod UNINDEXED,
 	namespace UNINDEXED,
 	container UNINDEXED,
 	timestamp UNINDEXED,
+	level UNINDEXED,
 	line
 );
 `
@@ -123,14 +129,14 @@ func insertGroup(db *sql.DB, lines []LogLine) error {
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op if committed
 
-	stmt, err := tx.Prepare(`INSERT INTO fts (pod, namespace, container, timestamp, line) VALUES (?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO fts (pod, namespace, container, timestamp, level, line) VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, l := range lines {
-		if _, err := stmt.Exec(l.Pod, l.Namespace, l.Container, l.Timestamp.Format(time.RFC3339Nano), l.Content); err != nil {
+		if _, err := stmt.Exec(l.Pod, l.Namespace, l.Container, l.Timestamp.Format(time.RFC3339Nano), l.Level, l.Content); err != nil {
 			return err
 		}
 	}
@@ -187,7 +193,7 @@ func (s *Store) Search(query string, start, end time.Time, limit int) ([]SearchR
 		if _, err := conn.Exec(fmt.Sprintf(`ATTACH DATABASE ? AS %s`, alias), s.dbPath(date)); err != nil {
 			// Shouldn't normally happen since we just os.Stat'd the file,
 			// but skip rather than fail the whole query.
-			log.Printf("warn: failed to attach shard %s: %v", date, err)
+			slog.Warn("failed to attach shard", "date", date, "err", err)
 			continue
 		}
 		// FTS5's snippet()/bm25()/MATCH only resolve a schema-qualified
@@ -195,8 +201,8 @@ func (s *Store) Search(query string, start, end time.Time, limit int) ([]SearchR
 		// the WHERE clause — alias it back to the unqualified "fts" so
 		// every other reference in this SELECT can use that instead.
 		selects = append(selects, fmt.Sprintf(
-			`SELECT pod, namespace, container, timestamp,
-				snippet(fts, 4, '<mark>', '</mark>', '...', 64) AS snip,
+			`SELECT pod, namespace, container, timestamp, level,
+				snippet(fts, 5, '<mark>', '</mark>', '...', 64) AS snip,
 				bm25(fts) AS rank
 			 FROM %[1]s.fts AS fts WHERE fts MATCH ?`, alias))
 		args = append(args, query)
@@ -217,7 +223,7 @@ func (s *Store) Search(query string, start, end time.Time, limit int) ([]SearchR
 	var results []SearchResult
 	for rows.Next() {
 		var r SearchResult
-		if err := rows.Scan(&r.Pod, &r.Namespace, &r.Container, &r.Timestamp, &r.Snippet, &r.Rank); err != nil {
+		if err := rows.Scan(&r.Pod, &r.Namespace, &r.Container, &r.Timestamp, &r.Level, &r.Snippet, &r.Rank); err != nil {
 			return nil, fmt.Errorf("scan result: %w", err)
 		}
 		results = append(results, r)
@@ -262,7 +268,7 @@ func (s *Store) CleanupOldDBs(retentionDays int) error {
 			for _, suffix := range []string{"", "-wal", "-shm"} {
 				_ = os.Remove(path + suffix)
 			}
-			log.Printf("retention: deleted expired shard %s (older than %d days)", name, retentionDays)
+			slog.Info("retention: deleted expired shard", "shard", name, "retention_days", retentionDays)
 		} else {
 			remaining = append(remaining, dateStr)
 		}
@@ -270,7 +276,7 @@ func (s *Store) CleanupOldDBs(retentionDays int) error {
 
 	for _, dateStr := range remaining {
 		if err := s.vacuumShard(dateStr); err != nil {
-			log.Printf("warn: vacuum failed for shard %s: %v", dateStr, err)
+			slog.Warn("vacuum failed for shard", "shard", dateStr, "err", err)
 		}
 	}
 	return nil
@@ -303,7 +309,7 @@ func (s *Store) StartRetentionCron(retentionDays int, stop <-chan struct{}) {
 		select {
 		case <-time.After(time.Until(next)):
 			if err := s.CleanupOldDBs(retentionDays); err != nil {
-				log.Printf("error: retention cleanup failed: %v", err)
+				slog.Error("retention cleanup failed", "err", err)
 			}
 		case <-stop:
 			return

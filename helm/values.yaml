@@ -14,6 +14,8 @@ retentionDays: 7
 batchSize: 200
 batchInterval: "500ms"
 includeInitContainers: false
+# How many days back /api/search looks when the caller omits start.
+defaultSearchDays: 7
 
 storageSize: 10Gi
 storageClassName: ""

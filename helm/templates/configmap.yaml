@@ -6,10 +6,14 @@ metadata:
   labels:
     {{- include "grepod.labels" . | nindent 4 }}
 data:
-  NAMESPACE: {{ .Values.namespace | default "default" | quote }}
+  # NAMESPACE and POD_NAME are intentionally not here — they're sourced
+  # from the Kubernetes Downward API directly on the container in
+  # templates/deployment.yaml, so grepod's watched namespace can never
+  # drift from .Values.namespace/the release namespace it's deployed into.
   RETENTION_DAYS: {{ .Values.retentionDays | default 7 | quote }}
   BATCH_SIZE: {{ .Values.batchSize | default 200 | quote }}
   BATCH_INTERVAL: {{ .Values.batchInterval | default "500ms" | quote }}
   INCLUDE_INIT_CONTAINERS: {{ .Values.includeInitContainers | default false | quote }}
+  DEFAULT_SEARCH_DAYS: {{ .Values.defaultSearchDays | default 7 | quote }}
   DATA_DIR: "/data"
   LISTEN_ADDR: ":8080"

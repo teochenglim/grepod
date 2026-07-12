@@ -1,7 +1,7 @@
 package storage
 
 import (
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -12,6 +12,7 @@ type LogLine struct {
 	Namespace string
 	Container string
 	Timestamp time.Time
+	Level     string // best-effort detected log level; empty if unrecognized
 	Content   string
 }
 
@@ -58,7 +59,7 @@ func (q *BatchQueue) Enqueue(l LogLine) {
 	select {
 	case q.in <- l:
 	default:
-		log.Printf("warn: batch queue full, dropping line for pod=%s container=%s", l.Pod, l.Container)
+		slog.Warn("batch queue full, dropping line", "pod", l.Pod, "container", l.Container)
 	}
 }
 
@@ -117,7 +118,7 @@ func (q *BatchQueue) flush() {
 	q.mu.Unlock()
 
 	if err := q.store.InsertBatch(batch); err != nil {
-		log.Printf("error: failed to flush %d log lines: %v", len(batch), err)
+		slog.Error("failed to flush log lines", "count", len(batch), "err", err)
 	}
 }
 
