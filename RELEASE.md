@@ -10,7 +10,8 @@ One row per version, newest first. Each links to its detail file in
 | [v0.7.0](RELEASE/v0.7.0.md) | Restart-safe tailing + RED metrics | Not started | `/metrics` moved here from v0.3.0. |
 | [v0.6.0](RELEASE/v0.6.0.md) | Hardening, perf pass, docs catch-up | Not started | |
 | [v0.5.0](RELEASE/v0.5.0.md) | Live tail UI + search UX + level filtering | Not started | |
-| [v0.4.1](RELEASE/v0.4.1.md) | Release tooling fix: no more auto-generated bump commits | Ready to tag | Implemented, verified locally, uncommitted. |
+| [v0.4.2](RELEASE/v0.4.2.md) | Release tooling fix: push HEAD before tagging | Ready to tag | Implemented, verified locally, uncommitted. |
+| [v0.4.1](RELEASE/v0.4.1.md) | Release tooling fix: no more auto-generated bump commits | Shipped | Tagged. Surfaced the exact gap v0.4.2 fixes — see its file. |
 | [v0.4.0](RELEASE/v0.4.0.md) | Live tail backend (`/api/tail`) | Shipped | Tagged. Also fixed a missing-SIGTERM and shutdown-ordering bug — see its file. |
 | [v0.3.0](RELEASE/v0.3.0.md) | Observability foundation: health, structured logging, log level | Shipped | Tagged. |
 | [v0.2.1](RELEASE/v0.2.1.md) | Security workflow fixes | Shipped | Tagged. Fixed all 3 jobs that failed on v0.2.0's tag push. |

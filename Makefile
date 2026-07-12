@@ -15,8 +15,8 @@ help: ## Show this menu
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Release cycle:"
-	@echo "  make release VERSION=x.y.z   # bump VERSION, tag, push the tag -> triggers GitHub Actions"
-	@echo "                                # (commit/push your actual work yourself, before or after)"
+	@echo "  make release VERSION=x.y.z   # bump VERSION (amended into your last commit), push, tag, push -> CI"
+	@echo "                                # (commit your actual work yourself first - your message is kept)"
 
 ## --- develop ---------------------------------------------------------------
 
@@ -101,10 +101,12 @@ bump: ## Rewrite the VERSION file (VERSION=x.y.z required)
 	@echo "VERSION -> $(VERSION)"
 
 .PHONY: release
-release: ## Bump VERSION, tag HEAD, and push the tag - triggers GitHub Actions (VERSION=x.y.z required)
+release: ## Bump VERSION (amended into HEAD), push, tag, push the tag - triggers GitHub Actions (VERSION=x.y.z required)
 	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=x.y.z"; exit 1; fi
 	$(MAKE) bump VERSION=$(VERSION)
+	git add VERSION
+	git commit --amend --no-edit
+	git push --force-with-lease origin HEAD
 	git tag v$(VERSION)
 	git push origin v$(VERSION)
 	@echo "Released v$(VERSION) - GitHub Actions will build and publish."
-	@echo "VERSION was rewritten but not committed - the release itself doesn't depend on it (the tag is the source of truth), but commit it yourself whenever convenient."
