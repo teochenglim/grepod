@@ -9,6 +9,7 @@ One row per version, newest first. Each links to its detail file in
 | [v0.8.0](RELEASE/v0.8.0.md) | Read/write timeouts + SQLite write consolidation | Not started | |
 | [v0.7.0](RELEASE/v0.7.0.md) | Restart-safe tailing + RED metrics | Not started | `/metrics` moved here from v0.3.0. |
 | [v0.6.0](RELEASE/v0.6.0.md) | Hardening, perf pass, docs catch-up | Not started | |
+| [v0.5.1](RELEASE/v0.5.1.md) | Fix self-tail feedback loop; pin image tags; release tooling fix | Shipped | Tagged. |
 | [v0.5.0](RELEASE/v0.5.0.md) | Live tail UI + search UX + level filtering | Shipped | Tagged. Tail mode, level tabs, cursor pagination, pod/container filters, group-occurrences — see its file. |
 | [v0.4.2](RELEASE/v0.4.2.md) | Release tooling fix: push HEAD before tagging | Shipped | Tagged. |
 | [v0.4.1](RELEASE/v0.4.1.md) | Release tooling fix: no more auto-generated bump commits | Shipped | Tagged. Surfaced the exact gap v0.4.2 fixes — see its file. |
@@ -50,20 +51,30 @@ Then:
 make release VERSION=x.y.z
 ```
 
-This bumps `VERSION` (rewritten, not committed — the release pipeline
-itself doesn't read the file; `release.yml` derives everything from
-`github.ref_name`, the git tag, so this is purely local convenience for
-`make version`/`make docker-build`/the help banner), tags whatever's
-currently at `HEAD`, and pushes the tag. Nothing else — no commit, no
-`git push origin HEAD`. Since it doesn't create a commit, the tag lands
-directly on the commit you just pushed, so GitHub Actions' run list shows
-*your* message, not a generic bump commit's.
+This bumps `VERSION`, `helm/Chart.yaml`'s `appVersion`, and
+`k8s/20-deployment.yaml`'s image tag (all rewritten by `make bump` via
+`sed`, not committed — the release pipeline itself doesn't read any of
+them; `release.yml` derives everything from `github.ref_name`, the git
+tag, so this is purely local convenience for `make version`/
+`make docker-build`/the help banner/reproducible manifests), pushes
+`HEAD`, tags whatever's now at `HEAD`, and pushes the tag. It never
+creates a commit itself — pushing `HEAD` only pushes what you already
+committed (the bump above ends up uncommitted; fold it into your next
+commit, or its own, whenever convenient). Since `release` doesn't create
+a commit, the tag lands directly on the commit you actually wrote, so
+GitHub Actions' run list shows *your* message, not a generic bump
+commit's.
 
 Triggers `.github/workflows/release.yml` (cross-platform binaries +
 GitHub Release + GHCR image, multi-arch since v0.4.0's CI fix). See each
 version's file in `RELEASE/` for what's actually in scope. See
-[RELEASE/v0.4.1](RELEASE/v0.4.1.md) for how this flow settled here after
-three earlier iterations.
+[RELEASE/v0.4.1](RELEASE/v0.4.1.md) and [RELEASE/v0.4.2](RELEASE/v0.4.2.md)
+for how this flow settled here (four iterations to remove the auto-commit,
+then one more to add `git push origin HEAD` back deliberately, in the
+right order, after skipping it caused a real incident) — and
+[RELEASE/v0.5.1](RELEASE/v0.5.1.md) for why it briefly regressed back to
+an auto-`--amend`-and-force-push flow, and for the `helm`/`k8s` image-tag
+bump added in the same fix.
 
 ### `RELEASE/vX.Y.Z.md` status line
 

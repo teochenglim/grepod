@@ -17,6 +17,19 @@ either when it hits `BATCH_SIZE` (default 200) lines or every
 `BATCH_INTERVAL` (default 500ms) tick, whichever comes first. This bounds
 both memory use and worst-case indexing latency.
 
+### Never flooding on a full queue (v0.5.1)
+
+`Enqueue`'s full-channel case originally logged one `slog.Warn` per
+dropped line — fine in isolation, but under a sustained overload (hundreds
+of drops/second) that's hundreds of warning lines/second written to
+grepod's own stdout, which [DESIGN/02](02_design_tailer.md#never-tailing-itself-v051)
+explains is itself tailed back in absent the `selfPod` exclusion added in
+the same release. `recordDrop` collapses this to at most one summarizing
+warning (`count`, `last_pod`, `last_container`) per `dropWarnInterval`
+(5s), tracked with two atomics (`dropped`, `lastWarnedAt`) rather than a
+mutex, keeping `Enqueue`'s existing never-block guarantee intact on this
+path too.
+
 ## Broadcaster: live tail fan-out
 
 `tailer.Manager.ingest` doesn't call `BatchQueue.Enqueue` directly —

@@ -40,7 +40,7 @@ func (f *fakeSink) snapshot() []storage.LogLine {
 func newTestManager() (*Manager, *fakeSink) {
 	sink := &fakeSink{}
 	clientset := fake.NewSimpleClientset()
-	mgr := NewManager(clientset, "default", sink, false)
+	mgr := NewManager(clientset, "default", sink, false, "")
 	return mgr, sink
 }
 
@@ -157,7 +157,7 @@ func TestReconcilePod_InitContainersRespectFlag(t *testing.T) {
 	t.Run("included when requested", func(t *testing.T) {
 		sink := &fakeSink{}
 		clientset := fake.NewSimpleClientset()
-		mgr := NewManager(clientset, "default", sink, true)
+		mgr := NewManager(clientset, "default", sink, true, "")
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -170,6 +170,45 @@ func TestReconcilePod_InitContainersRespectFlag(t *testing.T) {
 			t.Fatal("init container should be tailed when includeInit is true")
 		}
 	})
+}
+
+// RELEASE/v0.5.1: reconciling grepod's own pod (selfPod) must never start
+// a tailer goroutine for it — this is the fix for the self-tail feedback
+// loop where BatchQueue's "queue full, dropping line" warning would get
+// tailed back in and re-enqueued indefinitely.
+func TestReconcilePod_NeverTailsSelfPod(t *testing.T) {
+	sink := &fakeSink{}
+	clientset := fake.NewSimpleClientset()
+	mgr := NewManager(clientset, "default", sink, false, "grepod-abc123")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr.reconcilePod(ctx, podWithContainer("grepod-abc123", "grepod", 0))
+
+	mgr.mu.Lock()
+	_, tracked := mgr.cancels[containerKey{pod: "grepod-abc123", container: "grepod"}]
+	mgr.mu.Unlock()
+	if tracked {
+		t.Fatal("grepod's own pod must never be tailed")
+	}
+}
+
+// An empty selfPod (POD_NAME unset, e.g. running outside Kubernetes) must
+// not exclude a pod literally named "" — the exclusion only applies when
+// selfPod is actually known.
+func TestReconcilePod_EmptySelfPodDoesNotExcludeAnything(t *testing.T) {
+	mgr, _ := newTestManager() // selfPod == ""
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr.reconcilePod(ctx, podWithContainer("web-1", "app", 0))
+
+	mgr.mu.Lock()
+	_, tracked := mgr.cancels[containerKey{pod: "web-1", container: "app"}]
+	mgr.mu.Unlock()
+	if !tracked {
+		t.Fatal("with no selfPod configured, a normal pod should still be tailed")
+	}
 }
 
 // DESIGN/02: a pod delete must stop every container's tailer goroutine for

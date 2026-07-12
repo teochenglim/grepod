@@ -15,8 +15,8 @@ help: ## Show this menu
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Release cycle:"
-	@echo "  make release VERSION=x.y.z   # bump VERSION (amended into your last commit), push, tag, push -> CI"
-	@echo "                                # (commit your actual work yourself first - your message is kept)"
+	@echo "  make release VERSION=x.y.z   # bump VERSION + helm/k8s image tags, push HEAD, tag, push tag -> CI"
+	@echo "                                # (commit your actual work - and the bump - yourself; nothing here commits for you)"
 
 ## --- develop ---------------------------------------------------------------
 
@@ -95,18 +95,21 @@ version: ## Print the version currently in VERSION
 	@echo $(VERSION_CURRENT)
 
 .PHONY: bump
-bump: ## Rewrite the VERSION file (VERSION=x.y.z required)
+bump: ## Rewrite VERSION, helm/Chart.yaml's appVersion, and k8s/20-deployment.yaml's image tag (VERSION=x.y.z required)
 	@if [ -z "$(VERSION)" ]; then echo "Usage: make bump VERSION=x.y.z"; exit 1; fi
 	@echo "$(VERSION)" > VERSION
-	@echo "VERSION -> $(VERSION)"
+	@# No "v" prefix: matches the GHCR tags docker/metadata-action actually
+	@# publishes (type=semver,pattern={{version}} strips the git tag's "v").
+	sed -i.bak -E 's/^appVersion: ".*"/appVersion: "$(VERSION)"/' helm/Chart.yaml && rm -f helm/Chart.yaml.bak
+	sed -i.bak -E 's#(ghcr\.io/teochenglim/grepod):[^"]*#\1:$(VERSION)#' k8s/20-deployment.yaml && rm -f k8s/20-deployment.yaml.bak
+	@echo "VERSION -> $(VERSION) (also helm/Chart.yaml appVersion, k8s/20-deployment.yaml image tag)"
 
 .PHONY: release
-release: ## Bump VERSION (amended into HEAD), push, tag, push the tag - triggers GitHub Actions (VERSION=x.y.z required)
+release: ## Bump VERSION + helm/k8s image tags, push HEAD, tag, push the tag - triggers GitHub Actions (VERSION=x.y.z required)
 	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=x.y.z"; exit 1; fi
 	$(MAKE) bump VERSION=$(VERSION)
-	git add VERSION
-	git commit --amend --no-edit
-	git push --force-with-lease origin HEAD
+	git push origin HEAD
 	git tag v$(VERSION)
 	git push origin v$(VERSION)
 	@echo "Released v$(VERSION) - GitHub Actions will build and publish."
+	@echo "Note: the VERSION/helm/k8s bump above is uncommitted - commit it yourself whenever convenient (see RELEASE.md)."

@@ -6,7 +6,13 @@ image:
   # tagged release. Override to your own registry/build if you forked or
   # build locally (see helm/README.md and `make docker-build`).
   repository: ghcr.io/teochenglim/grepod
-  tag: latest
+  # Empty by default: falls back to .Chart.AppVersion (see
+  # helm/templates/deployment.yaml), which `make bump`/`make release`
+  # keeps in sync with VERSION — so a plain `helm upgrade` tracks
+  # whatever grepod version this chart checkout actually is, not a
+  # floating `latest` that could silently drift ahead of what was
+  # tested. Set explicitly to pin to something else.
+  tag: ""
   pullPolicy: IfNotPresent
 
 # The namespace grepod watches AND is deployed into (grepod is

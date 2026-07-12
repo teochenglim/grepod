@@ -75,7 +75,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mgr := tailer.NewManager(clientset, namespace, sink, includeInit)
+	mgr := tailer.NewManager(clientset, namespace, sink, includeInit, podName)
 	mgrDone := make(chan struct{})
 	go func() {
 		defer close(mgrDone)

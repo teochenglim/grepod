@@ -48,6 +48,7 @@ type Manager struct {
 	namespace   string
 	sink        Sink
 	includeInit bool
+	selfPod     string // never tailed — see reconcilePod
 
 	mu            sync.Mutex
 	cancels       map[containerKey]context.CancelFunc
@@ -59,12 +60,18 @@ type Manager struct {
 
 // NewManager creates a Manager for the given namespace. If includeInit is
 // true, init containers are tailed in addition to regular containers.
-func NewManager(clientset kubernetes.Interface, namespace string, sink Sink, includeInit bool) *Manager {
+// selfPod (grepod's own Kubernetes pod name, from the Downward API's
+// POD_NAME) is never tailed, regardless of includeInit — see
+// reconcilePod's doc comment for why. An empty selfPod (e.g. running
+// outside Kubernetes with POD_NAME unset) disables the exclusion rather
+// than matching every pod named "".
+func NewManager(clientset kubernetes.Interface, namespace string, sink Sink, includeInit bool, selfPod string) *Manager {
 	return &Manager{
 		clientset:     clientset,
 		namespace:     namespace,
 		sink:          sink,
 		includeInit:   includeInit,
+		selfPod:       selfPod,
 		cancels:       make(map[containerKey]context.CancelFunc),
 		restartCounts: make(map[containerKey]int32),
 	}
@@ -136,7 +143,18 @@ func (m *Manager) Ready() bool {
 // reconcilePod ensures every (init) container in pod has a running tailer
 // goroutine, restarting it if the container's RestartCount has changed
 // since we last saw it.
+//
+// pod.Name == m.selfPod is skipped entirely: grepod tailing its own pod
+// creates a feedback loop with BatchQueue.Enqueue's own "queue full,
+// dropping line" warning (see internal/storage/queue.go) — that warning
+// is written to grepod's own stdout, which grepod would then tail back in
+// and try to enqueue, and if the queue is still full that re-triggers the
+// same warning, indefinitely. See RELEASE/v0.5.1.md.
 func (m *Manager) reconcilePod(ctx context.Context, pod *corev1.Pod) {
+	if m.selfPod != "" && pod.Name == m.selfPod {
+		return
+	}
+
 	statuses := pod.Status.ContainerStatuses
 	if m.includeInit {
 		combined := make([]corev1.ContainerStatus, 0, len(pod.Status.InitContainerStatuses)+len(statuses))

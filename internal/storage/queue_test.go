@@ -1,6 +1,9 @@
 package storage
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
@@ -63,6 +66,56 @@ func TestBatchQueue_FlushesOnInterval(t *testing.T) {
 	q.Enqueue(LogLine{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: time.Now(), Content: "flush-on-interval-marker"})
 
 	pollUntilCount(t, store, "flush-on-interval-marker", 1, 2*time.Second)
+}
+
+// RELEASE/v0.5.1: a full queue must collapse many drops within one
+// dropWarnInterval window into a single warning, not one log line per
+// dropped line — the fix for the self-tail feedback loop where each
+// warning became a new line grepod would try (and, if still overloaded,
+// fail) to enqueue.
+func TestBatchQueue_RateLimitsFullWarning(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	// Built directly (not via NewBatchQueue) so no run() goroutine drains
+	// q.in — the channel fills deterministically after exactly one send,
+	// rather than racing a background consumer.
+	q := &BatchQueue{in: make(chan LogLine, 1)}
+	q.Enqueue(LogLine{Pod: "web-1", Container: "app", Content: "fills capacity"})
+
+	for i := 0; i < 50; i++ {
+		q.Enqueue(LogLine{Pod: "web-1", Container: "app", Content: "dropped"})
+	}
+
+	if got := strings.Count(buf.String(), "batch queue full"); got != 1 {
+		t.Fatalf("expected exactly 1 warning for 50 drops within the rate-limit window, got %d:\n%s", got, buf.String())
+	}
+}
+
+// RELEASE/v0.5.1: once dropWarnInterval has actually elapsed, a further
+// drop logs again rather than staying silent forever.
+func TestBatchQueue_WarnsAgainAfterRateLimitWindow(t *testing.T) {
+	orig := dropWarnInterval
+	dropWarnInterval = 20 * time.Millisecond
+	t.Cleanup(func() { dropWarnInterval = orig })
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	q := &BatchQueue{in: make(chan LogLine, 1)}
+	q.Enqueue(LogLine{Pod: "web-1", Container: "app", Content: "fills capacity"})
+	q.Enqueue(LogLine{Pod: "web-1", Container: "app", Content: "dropped 1"}) // logs immediately (first ever)
+
+	time.Sleep(30 * time.Millisecond)
+	q.Enqueue(LogLine{Pod: "web-1", Container: "app", Content: "dropped 2"}) // window elapsed, logs again
+
+	if got := strings.Count(buf.String(), "batch queue full"); got != 2 {
+		t.Fatalf("expected 2 warnings across two rate-limit windows, got %d:\n%s", got, buf.String())
+	}
 }
 
 // DESIGN/03: Close flushes whatever is still buffered rather than

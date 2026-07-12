@@ -3,8 +3,18 @@ package storage
 import (
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// dropWarnInterval bounds how often Enqueue logs a "queue full" warning,
+// regardless of how many lines are actually being dropped — a sustained
+// overload can drop hundreds of lines per second, and logging one warning
+// per drop would itself flood the tailed logs (grepod's own stdout is
+// tailed like any other container's, in namespaces where it isn't
+// excluded — see RELEASE/v0.5.1.md), making the overload worse instead of
+// just reporting it. A package var (not const) so tests can shrink it.
+var dropWarnInterval = 5 * time.Second
 
 // LogLine represents a single ingested log line awaiting persistence.
 type LogLine struct {
@@ -28,6 +38,9 @@ type BatchQueue struct {
 	in       chan LogLine
 	done     chan struct{}
 	stopped  chan struct{}
+
+	dropped      atomic.Int64 // lines dropped since the last warning
+	lastWarnedAt atomic.Int64 // UnixNano of the last "queue full" warning, 0 if never
 }
 
 // NewBatchQueue creates a queue that flushes to store every `interval`
@@ -59,8 +72,27 @@ func (q *BatchQueue) Enqueue(l LogLine) {
 	select {
 	case q.in <- l:
 	default:
-		slog.Warn("batch queue full, dropping line", "pod", l.Pod, "container", l.Container)
+		q.recordDrop(l)
 	}
+}
+
+// recordDrop tracks a dropped line and logs at most one summarizing
+// warning per dropWarnInterval instead of one per drop — see
+// dropWarnInterval's doc comment. Lock-free (atomics only), matching
+// Enqueue's own never-block guarantee.
+func (q *BatchQueue) recordDrop(l LogLine) {
+	q.dropped.Add(1)
+
+	now := time.Now().UnixNano()
+	last := q.lastWarnedAt.Load()
+	if last != 0 && time.Duration(now-last) < dropWarnInterval {
+		return
+	}
+	if !q.lastWarnedAt.CompareAndSwap(last, now) {
+		return // another goroutine just logged for this window
+	}
+	slog.Warn("batch queue full, dropping lines",
+		"count", q.dropped.Swap(0), "last_pod", l.Pod, "last_container", l.Container)
 }
 
 func (q *BatchQueue) run() {

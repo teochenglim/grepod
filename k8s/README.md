@@ -30,7 +30,7 @@ completeness but pins `minReplicas`/`maxReplicas` to 1 for the same reason.
 | `12-serviceaccount.yaml` | Identity the pod runs as. |
 | `13-role.yaml` | Namespace-scoped `Role`/`RoleBinding`: `get/watch/list` on `pods`, `get` on `pods/log`. Nothing cluster-wide. |
 | `14-pvc.yaml` | 10Gi `ReadWriteOnce` volume for the SQLite shards. |
-| `20-deployment.yaml` | The workload. Defaults to `ghcr.io/teochenglim/grepod:latest` — edit `image:` if you forked or build locally. See the GHCR visibility note below. |
+| `20-deployment.yaml` | The workload. `image:` is pinned to the version tagged in `VERSION` (kept in sync by `make bump`/`make release`) — edit it if you forked or build locally. See the GHCR visibility note below. |
 | `30-service.yaml` | `ClusterIP` on port 80 → container port 8080. |
 | `31-ingress.yaml` | Optional. Edit `host:` and add auth before exposing outside the cluster — see below. |
 | `32-hpa.yaml` | Optional, capped at 1 replica (see above). |
@@ -53,11 +53,17 @@ kubectl apply -k k8s/
 kubectl apply -k k8s/
 ```
 
-`image:` in `20-deployment.yaml` defaults to `ghcr.io/teochenglim/grepod:latest`
-(published by `.github/workflows/release.yml`'s `docker` job on every
-tagged release) — edit it if you forked the repo or build locally
-(`make docker-build`). It's not templated, so this is a direct edit, not
-a Kustomize/values override. `make k8s-apply`/`make k8s-delete` run the
+`image:` in `20-deployment.yaml` is pinned to a specific version tag (e.g.
+`ghcr.io/teochenglim/grepod:0.5.1` — no `v` prefix, unlike the git tag
+it's built from; `docker/metadata-action`'s `type=semver,pattern={{version}}`
+strips it), not `:latest` — deliberately, so `kubectl apply`/`helm
+upgrade` are reproducible and a redeploy doesn't silently pick up a newer
+image than the one actually tested. `make bump VERSION=x.y.z`/`make
+release VERSION=x.y.z` regex-replace the tag here (and
+`helm/Chart.yaml`'s `appVersion`) to match — see the Makefile. Not
+templated otherwise, so a fork or local build
+(`make docker-build`) still means editing the tag directly rather than a
+Kustomize/values override. `make k8s-apply`/`make k8s-delete` run the
 same `-k` commands.
 
 **GHCR packages published by GitHub Actions default to private.** If

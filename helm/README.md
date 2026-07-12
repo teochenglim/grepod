@@ -46,7 +46,7 @@ tagged push).
 | Key | Default | Notes |
 | :--- | :--- | :--- |
 | `namespace` | `default` | **Override this.** Where this release's resources are created; must match `--namespace`. grepod then watches this same namespace automatically (Downward API) — nothing else to set. |
-| `image.repository` / `image.tag` / `image.pullPolicy` | `grepod` / `latest` / `IfNotPresent` | Where to pull the image from. |
+| `image.repository` / `image.tag` / `image.pullPolicy` | `ghcr.io/teochenglim/grepod` / `""` (falls back to `.Chart.AppVersion`) / `IfNotPresent` | Where to pull the image from. Empty `tag` tracks whatever version this chart checkout is (`Chart.yaml`'s `appVersion`, kept in sync by `make bump`/`make release`), not a floating `latest`. |
 | `retentionDays` | `7` | Days of logs kept before a shard is deleted. |
 | `batchSize` / `batchInterval` | `200` / `500ms` | Write-batching thresholds — see [DESIGN/03](../DESIGN/03_design_storage.md). |
 | `includeInitContainers` | `false` | Also tail init containers. |

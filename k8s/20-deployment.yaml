@@ -28,9 +28,14 @@ spec:
       containers:
         - name: grepod
           # Published by .github/workflows/release.yml's docker job on
-          # every tagged release. Point this at your own registry/build
-          # if you forked or build locally (`make docker-build`).
-          image: "ghcr.io/teochenglim/grepod:latest"
+          # every tagged release. Note: no "v" prefix, unlike the git tag
+          # it's built from — docker/metadata-action's
+          # type=semver,pattern={{version}} strips it. Kept in sync with
+          # VERSION by `make bump`/`make release` (regex-replaced, not
+          # hand-edited — see Makefile). Point this at your own
+          # registry/build if you forked or build locally
+          # (`make docker-build`).
+          image: "ghcr.io/teochenglim/grepod:0.5.1"
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

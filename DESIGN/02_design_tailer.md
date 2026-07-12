@@ -27,6 +27,12 @@ if `INCLUDE_INIT_CONTAINERS=true`) and compares each container's current
 This makes the Manager idempotent under repeated informer events, which
 `client-go` delivers routinely (periodic resync, not just real changes).
 
+`reconcilePod` returns immediately, before touching any container, if
+`pod.Name == selfPod` — grepod's own pod (`selfPod` is `POD_NAME` from the
+Downward API, threaded through `tailer.NewManager`'s `selfPod` parameter)
+is never tailed. See "Never tailing itself" below for why this is a
+correctness fix, not just a self-observability preference.
+
 ## Streaming a container
 
 `tailContainer` runs two phases per container, forever, until its `ctx` is
@@ -65,6 +71,26 @@ appearing in a message that isn't actually indicating severity. Good
 enough for "mostly right, never silently wrong" — see
 [DESIGN/04](04_design_api.md) for how it's surfaced, and
 [v0.5.0](../RELEASE/v0.5.0.md) for the UI built on top of it.
+
+## Never tailing itself (v0.5.1)
+
+Early versions had no special case for grepod's own pod, and hit a
+self-sustaining feedback loop under any sustained overload:
+`storage.BatchQueue.Enqueue` logs a warning when its internal channel is
+full (`"batch queue full, dropping line"`, written to grepod's own
+stdout) — and since grepod tails every container in its namespace with no
+exclusion, it would tail that warning back in and try to enqueue it too.
+If the queue was still full, *that* attempt logged another warning, which
+got tailed back in, indefinitely — independent of whatever originally
+filled the queue, and it never recovered on its own. `reconcilePod`'s
+`pod.Name == selfPod` early return closes the loop at its root: grepod's
+own log lines never re-enter the pipeline in the first place. Paired with
+[DESIGN/03](03_design_storage.md#never-flooding-on-a-full-queue)'s
+rate-limited warning as defense in depth for any other pod producing a
+genuine sustained burst.
+
+An empty `selfPod` (e.g. `POD_NAME` unset, running outside Kubernetes)
+disables the exclusion rather than matching a pod literally named `""`.
 
 ## Adding a new event source
 
