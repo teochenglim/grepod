@@ -48,9 +48,11 @@ tagged push).
 | `namespace` | `default` | **Override this.** Where this release's resources are created; must match `--namespace`. grepod then watches this same namespace automatically (Downward API) — nothing else to set. |
 | `image.repository` / `image.tag` / `image.pullPolicy` | `ghcr.io/teochenglim/grepod` / `""` (falls back to `.Chart.AppVersion`) / `IfNotPresent` | Where to pull the image from. Empty `tag` tracks whatever version this chart checkout is (`Chart.yaml`'s `appVersion`, kept in sync by `make bump`/`make release`), not a floating `latest`. |
 | `retentionDays` | `7` | Days of logs kept before a shard is deleted. |
-| `batchSize` / `batchInterval` | `200` / `500ms` | Write-batching thresholds — see [DESIGN/03](../DESIGN/03_design_storage.md). |
+| `batchSize` / `batchInterval` | `200` / `15s` | Write-batching thresholds — see [DESIGN/03](../DESIGN/03_design_storage.md#context-bounded-queries-v080). |
+| `insertTimeout` | `30s` | Bounds a single flush's write to SQLite — a stuck-write backstop, not a latency target. |
 | `includeInitContainers` | `false` | Also tail init containers. |
 | `defaultSearchDays` | `7` | How many days back `/api/search` looks when the caller omits `start`. |
+| `httpReadTimeout` / `httpWriteTimeout` / `httpIdleTimeout` | `15s` / `30s` / `120s` | `http.Server` timeouts — see [DESIGN/04](../DESIGN/04_design_api/01_search.md#timeouts-and-client-disconnects-v100). `/api/tail` is exempt from `httpWriteTimeout`. |
 | `storageSize` / `storageClassName` | `10Gi` / `""` (cluster default) | The `ReadWriteOnce` PVC backing `/data`. |
 | `service.type` / `.port` / `.targetPort` | `ClusterIP` / `80` / `8080` | |
 | `serviceMonitor.enabled` | `false` | Renders a Prometheus Operator `ServiceMonitor` — see "Metrics" below. |

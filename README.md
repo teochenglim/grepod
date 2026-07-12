@@ -5,6 +5,8 @@ Loki, no Alloy, no sidecars. One static Go binary tails pods directly via
 the Kubernetes API, indexes lines into local SQLite FTS5 databases, and
 serves a small embedded search UI.
 
+![grepod](images/greppod.png)
+
 ```
 kubectl logs -f my-pod         # one pod, no search, scroll forever
 vs.
@@ -67,9 +69,13 @@ for the full story, including why grepod is one `Deployment` per namespace
 | `LOG_LEVEL` | `info` | grepod's own log verbosity: `debug`/`info`/`warn`/`error`. |
 | `RETENTION_DAYS` | `7` | Shards older than this are deleted nightly at 03:00 local time. |
 | `BATCH_SIZE` | `200` | Lines buffered before a write flush. |
-| `BATCH_INTERVAL` | `500ms` | Max time buffered lines wait before a flush. |
+| `BATCH_INTERVAL` | `15s` | Max time buffered lines wait before a flush (fewer, larger transactions per shard — was `500ms` before v1.0.0). |
+| `INSERT_TIMEOUT` | `30s` | Bounds a single flush's write to SQLite — a backstop against one stuck shard write stalling ingestion, not a latency target. |
 | `INCLUDE_INIT_CONTAINERS` | `false` | Also tail init containers. |
 | `DEFAULT_SEARCH_DAYS` | `7` | How many days back `/api/search` looks when the caller omits `start`. |
+| `HTTP_READ_TIMEOUT` | `15s` | `http.Server.ReadTimeout`. |
+| `HTTP_WRITE_TIMEOUT` | `30s` | `http.Server.WriteTimeout` — sized with headroom for a genuinely large cross-shard search. `/api/tail` is exempt (see [DESIGN/04](DESIGN/04_design_api/02_tail_and_known.md#apitail-v040)), since it's long-lived by design. |
+| `HTTP_IDLE_TIMEOUT` | `120s` | `http.Server.IdleTimeout`. |
 
 ## Features
 
@@ -106,8 +112,11 @@ for the full story, including why grepod is one `Deployment` per namespace
   metrics for insert/tail/search), structured JSON logs (`log/slog`) for
   grepod's own operation — see [DESIGN/04](DESIGN/04_design_api.md).
 
-See [DESIGN.md](DESIGN.md) for how it's built and
-[ARCHITECTURE.md](ARCHITECTURE.md) for where things live in the code.
+See [DESIGN.md](DESIGN.md) for how it's built,
+[ARCHITECTURE.md](ARCHITECTURE.md) for where things live in the code, and
+[COMPATIBILITY.md](COMPATIBILITY.md) for what's stable as of `v1.0.0`
+(env vars, HTTP API shapes, Helm `values.yaml` keys) and what's
+deliberately still out of scope.
 
 ## Security
 

@@ -1,5 +1,6 @@
 (function () {
   // ---- Search view elements ----
+  const searchPodEl = document.getElementById('searchPod');
   const startEl = document.getElementById('start');
   const endEl = document.getElementById('end');
   const queryEl = document.getElementById('query');
@@ -77,11 +78,12 @@
       const res = await fetch('/api/known?days=7');
       if (!res.ok) return;
       const data = await res.json();
+      populateSelect(searchPodEl, data.pods || [], 'All pods');
       populateSelect(tailPodEl, data.pods || [], 'All pods');
       populateSelect(tailContainerEl, data.containers || [], 'All containers');
     } catch (err) {
       // Non-fatal: the dropdowns just stay empty; free-text filtering via
-      // /api/tail's own params still works without this.
+      // /api/search's and /api/tail's own params still works without this.
     }
   }
   loadKnownFilters();
@@ -116,6 +118,7 @@
       start: startEl.value,
       end: endEl.value,
       level: currentLevel,
+      pod: searchPodEl.value,
     });
     if (!isFirstPage && nextCursor) params.set('cursor', nextCursor);
 
@@ -207,6 +210,7 @@
   queryEl.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') runSearch();
   });
+  searchPodEl.addEventListener('change', runSearch);
   groupToggleEl.addEventListener('change', renderSearchResults);
   loadMoreBtn.addEventListener('click', function () { fetchPage(false); });
 

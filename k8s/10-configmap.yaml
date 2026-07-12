@@ -12,8 +12,12 @@ data:
   # from the namespace it's actually deployed into.
   RETENTION_DAYS: "7"
   BATCH_SIZE: "200"
-  BATCH_INTERVAL: "500ms"
+  BATCH_INTERVAL: "15s"
+  INSERT_TIMEOUT: "30s"
   INCLUDE_INIT_CONTAINERS: "false"
   DEFAULT_SEARCH_DAYS: "7"
   DATA_DIR: "/data"
   LISTEN_ADDR: ":8080"
+  HTTP_READ_TIMEOUT: "15s"
+  HTTP_WRITE_TIMEOUT: "30s"
+  HTTP_IDLE_TIMEOUT: "120s"

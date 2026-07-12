@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -28,44 +29,72 @@ type LogLine struct {
 	Content   string
 }
 
+// defaultInsertTimeout bounds a single flush's InsertBatch call — see
+// NewBatchQueue's insertTimeout parameter and
+// DESIGN/03#context-bounded-queries-v080. Ingestion isn't request-driven
+// the way /api/search is, so there's no caller-supplied deadline to
+// thread through; this is a self-imposed backstop against one
+// pathological shard write (a stuck disk, WAL corruption) stalling the
+// whole ingestion pipeline behind it forever, not a latency target —
+// DESIGN/05's benchmarks put a normal 200-line flush at ~1.5ms, four
+// orders of magnitude under this.
+const defaultInsertTimeout = 30 * time.Second
+
+// defaultBatchInterval consolidates in memory roughly this often before
+// flushing to SQLite — see DESIGN/03#context-bounded-queries-v080 for the
+// v0.8.0-planned-then-folded-into-v1.0.0 change from the original 500ms:
+// fewer, larger transactions per shard under a busy namespace, at the
+// cost of a line enqueued right after a flush being searchable up to
+// this long later instead of ~500ms later (an accepted trade-off,
+// documented there — not a bug). BATCH_SIZE remains the other trigger,
+// so a busy namespace still flushes as soon as the buffer fills,
+// regardless of this interval.
+const defaultBatchInterval = 15 * time.Second
+
 // BatchQueue buffers LogLine entries in memory and flushes them to the
 // underlying Store either when a size threshold is reached or when a
 // timer ticks, whichever comes first.
 type BatchQueue struct {
-	mu       sync.Mutex
-	buf      []LogLine
-	size     int
-	interval time.Duration
-	store    *Store
-	in       chan LogLine
-	done     chan struct{}
-	stopped  chan struct{}
-	metrics  *metrics.Metrics // nil in tests that build a BatchQueue via struct literal — every use must nil-check
+	mu            sync.Mutex
+	buf           []LogLine
+	size          int
+	interval      time.Duration
+	insertTimeout time.Duration // bounds each flush's InsertBatch call — zero value (tests building BatchQueue via struct literal) means context.Background(), no bound
+	store         *Store
+	in            chan LogLine
+	done          chan struct{}
+	stopped       chan struct{}
+	metrics       *metrics.Metrics // nil in tests that build a BatchQueue via struct literal — every use must nil-check
 
 	dropped      atomic.Int64 // lines dropped since the last warning
 	lastWarnedAt atomic.Int64 // UnixNano of the last "queue full" warning, 0 if never
 }
 
 // NewBatchQueue creates a queue that flushes to store every `interval`
-// or once `size` lines have accumulated, whichever happens first. m
-// records RED metrics for the flush path (see internal/metrics); a nil m
-// disables that recording.
-func NewBatchQueue(store *Store, size int, interval time.Duration, m *metrics.Metrics) *BatchQueue {
+// or once `size` lines have accumulated, whichever happens first.
+// insertTimeout bounds each flush's InsertBatch call (see
+// defaultInsertTimeout); <= 0 uses the default. m records RED metrics for
+// the flush path (see internal/metrics); a nil m disables that recording.
+func NewBatchQueue(store *Store, size int, interval, insertTimeout time.Duration, m *metrics.Metrics) *BatchQueue {
 	if size <= 0 {
 		size = 200
 	}
 	if interval <= 0 {
-		interval = 500 * time.Millisecond
+		interval = defaultBatchInterval
+	}
+	if insertTimeout <= 0 {
+		insertTimeout = defaultInsertTimeout
 	}
 	q := &BatchQueue{
-		buf:      make([]LogLine, 0, size),
-		size:     size,
-		interval: interval,
-		store:    store,
-		in:       make(chan LogLine, size*4),
-		done:     make(chan struct{}),
-		stopped:  make(chan struct{}),
-		metrics:  m,
+		buf:           make([]LogLine, 0, size),
+		size:          size,
+		interval:      interval,
+		insertTimeout: insertTimeout,
+		store:         store,
+		in:            make(chan LogLine, size*4),
+		done:          make(chan struct{}),
+		stopped:       make(chan struct{}),
+		metrics:       m,
 	}
 	go q.run()
 	return q
@@ -158,8 +187,15 @@ func (q *BatchQueue) flush() {
 	q.buf = make([]LogLine, 0, q.size)
 	q.mu.Unlock()
 
+	ctx := context.Background()
+	if q.insertTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, q.insertTimeout)
+		defer cancel()
+	}
+
 	start := time.Now()
-	err := q.store.InsertBatch(batch)
+	err := q.store.InsertBatch(ctx, batch)
 	if q.metrics != nil {
 		q.metrics.InsertRequestsTotal.Inc()
 		q.metrics.InsertDuration.Observe(time.Since(start).Seconds())

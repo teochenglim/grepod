@@ -123,6 +123,7 @@ type searchResponse struct {
 	Start      string                 `json:"start"`
 	End        string                 `json:"end"`
 	Level      string                 `json:"level"`
+	Pod        string                 `json:"pod"`
 	Count      int                    `json:"count"`
 	Results    []storage.SearchResult `json:"results"`
 	NextCursor string                 `json:"next_cursor"`
@@ -131,8 +132,8 @@ type searchResponse struct {
 // handleSearch serves both full-text search and browse mode: q is
 // optional (DESIGN/04) — omitting it (or passing an empty/whitespace-only
 // value) browses every line in [start, end] (optionally narrowed by
-// level), most-recent-first, instead of requiring a keyword just to see
-// what's there.
+// level and/or pod), most-recent-first, instead of requiring a keyword
+// just to see what's there.
 func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 
@@ -164,11 +165,12 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	level := r.URL.Query().Get("level")
+	pod := r.URL.Query().Get("pod")
 
 	searchStart := time.Now()
-	page, err := h.store.Search(storage.SearchOptions{
+	page, err := h.store.Search(r.Context(), storage.SearchOptions{
 		Query: q, Start: start, End: end, Limit: 500,
-		Cursor: r.URL.Query().Get("cursor"), MinLevel: level,
+		Cursor: r.URL.Query().Get("cursor"), MinLevel: level, Pod: pod,
 	})
 	if h.metrics != nil {
 		h.metrics.SearchRequestsTotal.Inc()
@@ -187,6 +189,7 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Start:      startStr,
 		End:        endStr,
 		Level:      level,
+		Pod:        pod,
 		Count:      len(page.Results),
 		Results:    page.Results,
 		NextCursor: page.NextCursor,
@@ -240,6 +243,17 @@ func (h *Handler) handleTail(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
+
+	// cmd/server's http.Server sets a WriteTimeout (v1.0.0) sized for a
+	// slow-but-finite JSON response — wrong for this handler, whose
+	// response is unbounded-duration by design. Clearing the deadline
+	// (rather than extending it once) exempts this one connection for as
+	// long as it stays open, without weakening WriteTimeout for every
+	// other route. Ignoring the error: it's only non-nil when the
+	// underlying ResponseWriter doesn't support deadlines at all (e.g.
+	// httptest.ResponseRecorder in tests), in which case there's no
+	// WriteTimeout to clear in the first place.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 
 	podFilter := r.URL.Query().Get("pod")
 	containerFilter := r.URL.Query().Get("container")

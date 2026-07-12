@@ -31,12 +31,16 @@ A slow or disconnected client never blocks ingestion (see
 handler's own loop exits via `r.Context().Done()` on client disconnect,
 unsubscribing from the broadcaster.
 
-**Interacts with [v0.8.0](../../RELEASE/v0.8.0.md)'s planned
-`WriteTimeout`**: a blanket `http.Server.WriteTimeout` would kill every
-`/api/tail` connection after that duration, since it's long-lived by
-design. That release needs to either exempt streaming routes or use
-per-request `http.ResponseController.SetWriteDeadline` instead of a
-server-wide timeout — flagged here so it isn't rediscovered cold.
+**Exempted from [v1.0.0](../../RELEASE/v1.0.0.md)'s `WriteTimeout`**: a
+blanket `http.Server.WriteTimeout` would otherwise kill every `/api/tail`
+connection after that duration, since it's long-lived by design.
+`handleTail` clears its own per-connection deadline via
+`http.NewResponseController(w).SetWriteDeadline(time.Time{})` right after
+establishing the connection — exempting only this one connection for as
+long as it stays open, rather than weakening `WriteTimeout` server-wide
+for every other (genuinely bounded) route. This was flagged here ahead of
+that release specifically so it wasn't rediscovered cold while
+implementing it.
 
 ## `/api/known` (v0.5.0)
 

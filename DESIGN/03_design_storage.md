@@ -14,8 +14,9 @@ load is preferable to stalling log collection.
 
 A single `run()` goroutine owns the actual buffer and flushes it to `Store`
 either when it hits `BATCH_SIZE` (default 200) lines or every
-`BATCH_INTERVAL` (default 500ms) tick, whichever comes first. This bounds
-both memory use and worst-case indexing latency.
+`BATCH_INTERVAL` (default 15s, was 500ms before v1.0.0 — see "Context-bounded
+queries" below) tick, whichever comes first. This bounds both memory use and
+worst-case indexing latency.
 
 Each `flush()` call records the Insert RED metrics (v0.7.0, see
 [DESIGN/04](04_design_api.md#metrics-v070)): `grepod_insert_requests_total`,
@@ -49,8 +50,8 @@ path too.
 `Broadcaster` know about each other or about `tailer`; they're composed
 at the top, not coupled to each other. This matters because the two have
 different latency requirements: `BatchQueue` batches for SQLite
-throughput (`BATCH_INTERVAL`, currently 500ms — see
-[v0.8.0](../RELEASE/v0.8.0.md) for the planned move to 15s), while
+throughput (`BATCH_INTERVAL`, 15s as of v1.0.0 — see "Context-bounded
+queries" below), while
 `/api/tail` (see [DESIGN/04](04_design_api/02_tail_and_known.md#apitail-v040)) needs lines
 the instant they arrive, not after a flush.
 
@@ -147,9 +148,51 @@ and the tailer's fallback for "no marker" (ingest the container's current
 full buffer, same as pre-v0.7.0) is a fine degradation for a container that
 stale.
 
+## Context-bounded queries (v1.0.0)
+
+Originally planned as a separate v0.8.0 release, folded into v1.0.0 — see
+[RELEASE/v1.0.0](../RELEASE/v1.0.0.md). Before this, `Store.Search` took
+no `context.Context` at all: it called `sql.DB.Query`/`Exec`, not the
+`...Context` variants, so a request's timeout or an early client
+disconnect never actually reached SQLite — an expensive cross-shard query
+ran to completion regardless, with nothing bounding it but the HTTP
+server's own `WriteTimeout` from the outside.
+
+- **`Store.Search(ctx context.Context, opts SearchOptions)`** and
+  **`Store.InsertBatch(ctx context.Context, lines []LogLine)`** both check
+  `ctx.Err()` up front (an already-cancelled context returns promptly,
+  without ever touching SQLite) and use `QueryContext`/`ExecContext`/
+  `BeginTx`/`PrepareContext` throughout, so a context that expires or is
+  cancelled mid-query actually cancels the underlying SQLite operation.
+  `internal/api.Handler.handleSearch` passes `r.Context()` — a client that
+  disconnects mid-search no longer leaves that query running to
+  completion for nothing.
+- **`BatchQueue.flush` passes a bounded-but-generous context**
+  (`insertTimeout`, default 30s — see `defaultInsertTimeout`) rather than
+  `context.Background()`, even though ingestion isn't request-driven the
+  way search is: a self-imposed backstop against one pathological shard
+  write (a stuck disk, WAL corruption) stalling the whole ingestion
+  pipeline behind it forever. 30s is deliberately generous — DESIGN/05's
+  benchmarks put a normal 200-line flush at ~1.5ms, four orders of
+  magnitude under this; this is a hang detector, not a latency target.
+- **`Enqueue`'s channel capacity (`size*4`) was re-checked against
+  `BATCH_INTERVAL`'s 500ms→15s change and left unchanged.** The channel
+  only needs to absorb lines arriving while `run()`'s loop is blocked
+  inside a synchronous `flush()` call — bounded by `BATCH_SIZE` (how big
+  a batch gets before `flush()` is even called) and that flush's actual
+  duration (~1.5ms at the default size, per DESIGN/05), neither of which
+  `BATCH_INTERVAL` affects. `BATCH_INTERVAL` only matters for namespaces
+  quiet enough to never hit `BATCH_SIZE` within the interval — and by
+  definition, those never approach `size*4` lines in flight either. The
+  real effect of the 500ms→15s change is entirely in per-container
+  search-latency, not channel pressure: a line enqueued right after a
+  flush on a quiet container is now searchable up to ~15s later instead
+  of ~500ms later. Expected, not a bug — trades a small latency window on
+  quiet containers for meaningfully fewer, larger write transactions.
+
 ## Search: cross-shard ATTACH
 
-`Store.Search(opts SearchOptions)`:
+`Store.Search(ctx context.Context, opts SearchOptions)`:
 
 1. Lists which shard files exist for `[opts.Start, opts.End]` (`os.Stat` —
    a missing day is skipped, not an error).
@@ -172,6 +215,16 @@ Attaching per-query (rather than keeping every shard attached to one
 long-lived connection) keeps shard lifecycle simple: a shard file being
 deleted by the retention cron can't corrupt an in-flight query on a
 different connection.
+
+**Filtering (`opts.MinLevel`, `opts.Pod` — the latter since v1.1.0)** is
+built per-shard as a `conditions []string`/`condArgs []any` pair, shared
+between browse and keyword mode rather than each hand-rolling its own
+`WHERE`-vs-`AND` string concatenation: browse mode joins `conditions`
+into a `WHERE` clause (there's no `MATCH` to anchor an `AND` to), keyword
+mode appends each as `AND <condition>` after `WHERE fts MATCH ?`. Both
+filters combine with `AND`, not `OR` — `pod=web-1&level=ERROR` means
+"web-1's ERROR-and-above lines," not "web-1's lines, or anything
+ERROR-and-above."
 
 ## Retention
 

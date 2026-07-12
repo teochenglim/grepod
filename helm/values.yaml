@@ -21,10 +21,20 @@ namespace: "default"
 
 retentionDays: 7
 batchSize: 200
-batchInterval: "500ms"
+batchInterval: "15s"
+# Bounds a single flush's write to SQLite — a backstop against one stuck
+# shard write stalling ingestion, not a latency target.
+insertTimeout: "30s"
 includeInitContainers: false
 # How many days back /api/search looks when the caller omits start.
 defaultSearchDays: 7
+
+httpReadTimeout: "15s"
+# Sized with headroom for a genuinely large cross-shard search.
+# /api/tail is exempt (it's long-lived by design) — see
+# DESIGN/04_design_api/02_tail_and_known.md#apitail-v040.
+httpWriteTimeout: "30s"
+httpIdleTimeout: "120s"
 
 storageSize: 10Gi
 storageClassName: ""

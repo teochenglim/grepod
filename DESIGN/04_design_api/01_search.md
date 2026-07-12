@@ -12,18 +12,20 @@ Query params:
 | `start` | no | `end` minus `DEFAULT_SEARCH_DAYS - 1` days (`YYYY-MM-DD`) | Inclusive. `400` if unparseable. |
 | `end` | no | today | Inclusive. `400` if before `start`. |
 | `level` | no | `""` (no filtering — the UI's "ALL" tab) | One of `FATAL`/`ERROR`/`WARN`/`INFO`/`DEBUG`/`TRACE`. Matches that level *and anything more severe* (`level=WARN` returns `WARN`, `ERROR`, and `FATAL`), not an exact match — see "Level filtering" below. Unrecognized values are treated the same as `""`. |
+| `pod` | no | `""` (no filtering — the UI's "All pods" default, v1.1.0) | Exact match against `pod`. Combines with `level` via `AND`, not `OR` — see [DESIGN/03](../03_design_storage.md#store-daily-sharded-sqlite--fts5). |
 | `cursor` | no | `""` (first page) | Opaque, from a previous response's `next_cursor`. See "Pagination" below. |
 
 The default window (7 days unless `DEFAULT_SEARCH_DAYS` overrides it — a
 `Handler` field set from `cmd/server`, not hardcoded) is inclusive of
 today: `DEFAULT_SEARCH_DAYS=7` means today plus the 6 days before it.
 
-Response is JSON: `{query, start, end, level, count, results, next_cursor}`,
-where each result is a `storage.SearchResult` (`pod`, `namespace`,
-`container`, `timestamp`, `level` — best-effort detected, may be `""`, see
-[DESIGN/02](../02_design_tailer.md) — `snippet`, `rank`). Each page is
-capped at 500 results server-side regardless of what the caller asks for;
-`next_cursor` is `""` once there's nothing left to page through.
+Response is JSON: `{query, start, end, level, pod, count, results,
+next_cursor}`, where each result is a `storage.SearchResult` (`pod`,
+`namespace`, `container`, `timestamp`, `level` — best-effort detected, may
+be `""`, see [DESIGN/02](../02_design_tailer.md) — `snippet`, `rank`).
+Each page is capped at 500 results server-side regardless of what the
+caller asks for; `next_cursor` is `""` once there's nothing left to page
+through.
 
 ## Browse mode (v0.5.2)
 
@@ -83,3 +85,19 @@ Errors are always JSON (`{"error": "..."}`) with an appropriate 4xx/5xx
 status — see `writeJSONError`. There's no auth: the handler assumes the
 Service is only reachable inside the cluster (or behind whatever Ingress
 auth you layer on — see `k8s/README.md`).
+
+## Timeouts and client disconnects (v1.0.0)
+
+`handleSearch` passes `r.Context()` into `Store.Search`, which uses
+`QueryContext`/`ExecContext` throughout (see
+[DESIGN/03](../03_design_storage.md#context-bounded-queries-v080) — a
+client that disconnects mid-search actually cancels the underlying SQLite
+query instead of it running to completion for nothing. Independently,
+`cmd/server`'s `http.Server` now sets `ReadTimeout` (`HTTP_READ_TIMEOUT`,
+default 15s), `WriteTimeout` (`HTTP_WRITE_TIMEOUT`, default 30s — sized
+with headroom for a genuinely large cross-shard search, not just a
+typical fast response), and `IdleTimeout` (`HTTP_IDLE_TIMEOUT`, default
+120s), bounding every route this way from the outside as a backstop.
+`/api/tail` is the one exception — see
+[Tail & known](02_tail_and_known.md#apitail-v040) for why it clears its
+own write deadline rather than inheriting `WriteTimeout`.

@@ -12,8 +12,12 @@ data:
   # drift from .Values.namespace/the release namespace it's deployed into.
   RETENTION_DAYS: {{ .Values.retentionDays | default 7 | quote }}
   BATCH_SIZE: {{ .Values.batchSize | default 200 | quote }}
-  BATCH_INTERVAL: {{ .Values.batchInterval | default "500ms" | quote }}
+  BATCH_INTERVAL: {{ .Values.batchInterval | default "15s" | quote }}
+  INSERT_TIMEOUT: {{ .Values.insertTimeout | default "30s" | quote }}
   INCLUDE_INIT_CONTAINERS: {{ .Values.includeInitContainers | default false | quote }}
   DEFAULT_SEARCH_DAYS: {{ .Values.defaultSearchDays | default 7 | quote }}
   DATA_DIR: "/data"
   LISTEN_ADDR: ":8080"
+  HTTP_READ_TIMEOUT: {{ .Values.httpReadTimeout | default "15s" | quote }}
+  HTTP_WRITE_TIMEOUT: {{ .Values.httpWriteTimeout | default "30s" | quote }}
+  HTTP_IDLE_TIMEOUT: {{ .Values.httpIdleTimeout | default "120s" | quote }}

@@ -29,7 +29,7 @@ func pollUntilCount(t *testing.T, store *Store, query string, want int, timeout 
 	var lastErr error
 	var lastCount int
 	for time.Now().Before(deadline) {
-		page, err := store.Search(SearchOptions{Query: query, Start: today, End: today, Limit: 500})
+		page, err := store.Search(t.Context(), SearchOptions{Query: query, Start: today, End: today, Limit: 500})
 		if err != nil {
 			lastErr = err
 		} else if len(page.Results) == want {
@@ -46,7 +46,7 @@ func pollUntilCount(t *testing.T, store *Store, query string, want int, timeout 
 // waiting for the flush interval.
 func TestBatchQueue_FlushesOnSize(t *testing.T) {
 	store := newTestStore(t)
-	q := NewBatchQueue(store, 3, time.Hour, nil) // interval long enough that only size can trigger this
+	q := NewBatchQueue(store, 3, time.Hour, 0, nil) // interval long enough that only size can trigger this
 	t.Cleanup(q.Close)
 
 	for i := 0; i < 3; i++ {
@@ -56,11 +56,40 @@ func TestBatchQueue_FlushesOnSize(t *testing.T) {
 	pollUntilCount(t, store, "flush-on-size-marker", 3, 2*time.Second)
 }
 
+// RELEASE/v1.0.0 (originally planned as v0.8.0): the zero-value default
+// interval moved from 500ms to 15s (fewer, larger transactions per shard
+// for a namespace under BATCH_SIZE's threshold — see
+// DESIGN/03#context-bounded-queries-v080). Asserted against the field
+// directly rather than by waiting out 15s in a test.
+func TestNewBatchQueue_DefaultsIntervalTo15s(t *testing.T) {
+	store := newTestStore(t)
+	q := NewBatchQueue(store, 200, 0, 0, nil)
+	t.Cleanup(q.Close)
+
+	if q.interval != defaultBatchInterval {
+		t.Fatalf("interval = %v, want %v", q.interval, defaultBatchInterval)
+	}
+}
+
+// The zero-value default per-flush insert timeout is defaultInsertTimeout
+// (30s) — a backstop against one pathological shard write stalling
+// ingestion, not a latency target. See
+// DESIGN/03#context-bounded-queries-v080.
+func TestNewBatchQueue_DefaultsInsertTimeoutTo30s(t *testing.T) {
+	store := newTestStore(t)
+	q := NewBatchQueue(store, 200, time.Hour, 0, nil)
+	t.Cleanup(q.Close)
+
+	if q.insertTimeout != defaultInsertTimeout {
+		t.Fatalf("insertTimeout = %v, want %v", q.insertTimeout, defaultInsertTimeout)
+	}
+}
+
 // DESIGN/03: even a single buffered line is flushed once the interval
 // ticks, without needing to reach the size threshold.
 func TestBatchQueue_FlushesOnInterval(t *testing.T) {
 	store := newTestStore(t)
-	q := NewBatchQueue(store, 1000, 30*time.Millisecond, nil) // size unreachable; only the interval can trigger this
+	q := NewBatchQueue(store, 1000, 30*time.Millisecond, 0, nil) // size unreachable; only the interval can trigger this
 	t.Cleanup(q.Close)
 
 	q.Enqueue(LogLine{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: time.Now(), Content: "flush-on-interval-marker"})
@@ -122,14 +151,14 @@ func TestBatchQueue_WarnsAgainAfterRateLimitWindow(t *testing.T) {
 // discarding it, and blocks until that flush has actually happened.
 func TestBatchQueue_CloseFlushesRemaining(t *testing.T) {
 	store := newTestStore(t)
-	q := NewBatchQueue(store, 1000, time.Hour, nil) // neither threshold would fire on its own
+	q := NewBatchQueue(store, 1000, time.Hour, 0, nil) // neither threshold would fire on its own
 
 	q.Enqueue(LogLine{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: time.Now(), Content: "close-flush-marker"})
 	q.Close()
 
 	// Close() is documented to block until the flush completes, so this
 	// must already be true with no polling needed.
-	page, err := store.Search(SearchOptions{Query: "close-flush-marker", Start: time.Now(), End: time.Now(), Limit: 500})
+	page, err := store.Search(t.Context(), SearchOptions{Query: "close-flush-marker", Start: time.Now(), End: time.Now(), Limit: 500})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}

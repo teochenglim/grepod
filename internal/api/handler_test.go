@@ -47,7 +47,7 @@ func TestHandleSearch_MissingQueryBrowsesInsteadOf400(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(store.Close)
-	if err := store.InsertBatch([]storage.LogLine{
+	if err := store.InsertBatch(t.Context(), []storage.LogLine{
 		{Pod: "web-1", Container: "app", Timestamp: time.Now(), Content: "browse-mode line"},
 	}); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
@@ -201,7 +201,7 @@ func TestHandleSearch_LevelFiltersAtOrAboveSeverity(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(store.Close)
-	if err := store.InsertBatch([]storage.LogLine{
+	if err := store.InsertBatch(t.Context(), []storage.LogLine{
 		{Pod: "web-1", Container: "app", Timestamp: time.Now(), Level: "FATAL", Content: "leveltest fatal"},
 		{Pod: "web-1", Container: "app", Timestamp: time.Now(), Level: "INFO", Content: "leveltest info"},
 	}); err != nil {
@@ -230,6 +230,43 @@ func TestHandleSearch_LevelFiltersAtOrAboveSeverity(t *testing.T) {
 	}
 }
 
+// RELEASE/v1.1.0: pod narrows results to an exact pod match; an absent
+// pod param (the UI's "All pods" default) applies no filtering.
+func TestHandleSearch_PodFiltersToExactMatch(t *testing.T) {
+	store, err := storage.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.InsertBatch(t.Context(), []storage.LogLine{
+		{Pod: "web-1", Container: "app", Timestamp: time.Now(), Content: "podtest from web-1"},
+		{Pod: "web-2", Container: "app", Timestamp: time.Now(), Content: "podtest from web-2"},
+	}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, storage.NewBroadcaster(), nil)
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+
+	w := doGet(h, "/api/search?q=podtest&pod=web-1")
+	var resp searchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response was not valid JSON: %v", err)
+	}
+	if resp.Count != 1 || resp.Results[0].Pod != "web-1" || resp.Pod != "web-1" {
+		t.Fatalf("pod=web-1 should only surface web-1's line, got %+v (echoed pod=%q)", resp.Results, resp.Pod)
+	}
+
+	w = doGet(h, "/api/search?q=podtest")
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response was not valid JSON: %v", err)
+	}
+	if resp.Count != 2 {
+		t.Fatalf("no pod param (All pods) should surface every line, got %d", resp.Count)
+	}
+}
+
 // DESIGN/04: a next_cursor is returned once more results exist past the
 // requested page, and feeding it back via ?cursor= surfaces the rest.
 func TestHandleSearch_CursorPaginatesResults(t *testing.T) {
@@ -242,7 +279,7 @@ func TestHandleSearch_CursorPaginatesResults(t *testing.T) {
 	for i := 0; i < 510; i++ {
 		lines = append(lines, storage.LogLine{Pod: "web-1", Container: "app", Timestamp: time.Now(), Content: "cursortest line"})
 	}
-	if err := store.InsertBatch(lines); err != nil {
+	if err := store.InsertBatch(t.Context(), lines); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
 	}
 	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, storage.NewBroadcaster(), nil)
@@ -277,7 +314,7 @@ func TestHandleKnown_ReturnsDistinctPodsAndContainers(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(store.Close)
-	if err := store.InsertBatch([]storage.LogLine{
+	if err := store.InsertBatch(t.Context(), []storage.LogLine{
 		{Pod: "web-1", Container: "app", Timestamp: time.Now(), Content: "a"},
 		{Pod: "web-2", Container: "sidecar", Timestamp: time.Now(), Content: "b"},
 	}); err != nil {

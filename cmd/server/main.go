@@ -39,9 +39,17 @@ func main() {
 
 	retentionDays := envInt("RETENTION_DAYS", 7)
 	batchSize := envInt("BATCH_SIZE", 200)
-	batchInterval := envDuration("BATCH_INTERVAL", 500*time.Millisecond)
+	// 15s, not the original 500ms: fewer, larger transactions per shard
+	// under a busy namespace — BATCH_SIZE remains the other trigger, so a
+	// busy namespace still flushes as soon as the buffer fills regardless
+	// of this. See DESIGN/03#context-bounded-queries-v080.
+	batchInterval := envDuration("BATCH_INTERVAL", 15*time.Second)
+	insertTimeout := envDuration("INSERT_TIMEOUT", 30*time.Second)
 	includeInit := envBool("INCLUDE_INIT_CONTAINERS", false)
 	defaultSearchDays := envInt("DEFAULT_SEARCH_DAYS", 7)
+	readTimeout := envDuration("HTTP_READ_TIMEOUT", 15*time.Second)
+	writeTimeout := envDuration("HTTP_WRITE_TIMEOUT", 30*time.Second)
+	idleTimeout := envDuration("HTTP_IDLE_TIMEOUT", 120*time.Second)
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: parseLogLevel(envOr("LOG_LEVEL", "info")),
@@ -51,7 +59,8 @@ func main() {
 	slog.Info("grepod starting",
 		"namespace", namespace, "data_dir", dataDir,
 		"retention_days", retentionDays, "batch_size", batchSize, "batch_interval", batchInterval,
-		"default_search_days", defaultSearchDays)
+		"insert_timeout", insertTimeout, "default_search_days", defaultSearchDays,
+		"http_read_timeout", readTimeout, "http_write_timeout", writeTimeout, "http_idle_timeout", idleTimeout)
 
 	store, err := storage.NewStore(dataDir)
 	if err != nil {
@@ -66,7 +75,7 @@ func main() {
 	// reads them back via the shared default Prometheus registry.
 	m := metrics.New()
 
-	queue := storage.NewBatchQueue(store, batchSize, batchInterval, m)
+	queue := storage.NewBatchQueue(store, batchSize, batchInterval, insertTimeout, m)
 	defer queue.Close()
 
 	// broadcaster fans each ingested line out to live /api/tail
@@ -118,6 +127,14 @@ func main() {
 		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       readTimeout,
+		// WriteTimeout would otherwise kill /api/tail's long-lived SSE
+		// connections after this duration — handleTail clears its own
+		// per-connection write deadline via http.ResponseController, so
+		// this only actually bounds every other (short-lived) route. See
+		// DESIGN/04's "/api/tail (v0.4.0)" section.
+		WriteTimeout: writeTimeout,
+		IdleTimeout:  idleTimeout,
 	}
 
 	go func() {

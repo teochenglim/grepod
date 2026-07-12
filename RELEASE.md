@@ -5,8 +5,9 @@ One row per version, newest first. Each links to its detail file in
 
 | Version | Theme | Status | Notes |
 | :--- | :--- | :--- | :--- |
-| [v1.0.0](RELEASE/v1.0.0.md) | Stabilize & commit to compatibility | Not started | |
-| [v0.8.0](RELEASE/v0.8.0.md) | Read/write timeouts + SQLite write consolidation | Not started | |
+| [v1.1.0](RELEASE/v1.1.0.md) | Pod filter dropdown for Search | Ready to tag | Implemented and verified; queued behind v1.0.0 — tag v1.0.0 first. |
+| [v1.0.0](RELEASE/v1.0.0.md) | Read/write timeouts + SQLite write consolidation, then stabilize & commit to compatibility | Shipped | Tagged. Folded what was planned as a separate v0.8.0 in here — see its file. |
+| [v0.7.1](RELEASE/v0.7.1.md) | Release tooling: fold the version bump into the release commit | Shipped | Tagged. |
 | [v0.7.0](RELEASE/v0.7.0.md) | Restart-safe tailing + RED metrics | Shipped | Tagged. `/metrics` moved here from v0.3.0. |
 | [v0.6.0](RELEASE/v0.6.0.md) | Hardening, perf pass, docs catch-up | Shipped | Tagged. |
 | [v0.5.2](RELEASE/v0.5.2.md) | Fix permanent ingestion failure; browse logs without a keyword; fix unescaped log content in the UI | Shipped | Tagged. |

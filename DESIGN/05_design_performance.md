@@ -113,6 +113,6 @@ predictable one instead of a silent, backwards one. See
 Fully removing the 10-shard ceiling (e.g., batching `ATTACH` groups of
 10 and merging results in Go) would need cursor pagination to work
 across batches too — judged out of scope for this pass; flagged here for
-whoever picks it up next, alongside [v0.8.0](../RELEASE/v0.8.0.md)'s
+whoever picks it up next, alongside [v1.0.0](../RELEASE/v1.0.0.md)'s
 already-planned SQLite write consolidation, since both touch the same
 connection-management code.

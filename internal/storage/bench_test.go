@@ -31,7 +31,7 @@ func BenchmarkInsertBatch(b *testing.B) {
 			}
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if err := store.InsertBatch(lines); err != nil {
+				if err := store.InsertBatch(b.Context(), lines); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -61,7 +61,7 @@ func BenchmarkSearch_AcrossShards(b *testing.B) {
 					Content: fmt.Sprintf("shard %d benchmark line %d: request completed in 42ms status=200", d, i),
 				}
 			}
-			if err := store.InsertBatch(lines); err != nil {
+			if err := store.InsertBatch(b.Context(), lines); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -70,7 +70,7 @@ func BenchmarkSearch_AcrossShards(b *testing.B) {
 		b.Run(fmt.Sprintf("keyword/shards=%d", shardCount), func(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if _, err := store.Search(SearchOptions{Query: "completed", Start: base, End: end, Limit: 500}); err != nil {
+				if _, err := store.Search(b.Context(), SearchOptions{Query: "completed", Start: base, End: end, Limit: 500}); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -78,7 +78,7 @@ func BenchmarkSearch_AcrossShards(b *testing.B) {
 		b.Run(fmt.Sprintf("browse/shards=%d", shardCount), func(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if _, err := store.Search(SearchOptions{Start: base, End: end, Limit: 500}); err != nil {
+				if _, err := store.Search(b.Context(), SearchOptions{Start: base, End: end, Limit: 500}); err != nil {
 					b.Fatal(err)
 				}
 			}

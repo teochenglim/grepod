@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -17,7 +19,7 @@ func TestInsertBatch_SplitsAcrossDailyShards(t *testing.T) {
 	today := time.Now()
 	yesterday := today.AddDate(0, 0, -1)
 
-	err := store.InsertBatch([]LogLine{
+	err := store.InsertBatch(t.Context(), []LogLine{
 		{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: today, Content: "shard-marker today"},
 		{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: yesterday, Content: "shard-marker yesterday"},
 	})
@@ -31,7 +33,7 @@ func TestInsertBatch_SplitsAcrossDailyShards(t *testing.T) {
 		}
 	}
 
-	todayPage, err := store.Search(SearchOptions{Query: "shard-marker", Start: today, End: today, Limit: 500})
+	todayPage, err := store.Search(t.Context(), SearchOptions{Query: "shard-marker", Start: today, End: today, Limit: 500})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -39,7 +41,7 @@ func TestInsertBatch_SplitsAcrossDailyShards(t *testing.T) {
 		t.Fatalf("searching just today's range should only surface today's line, got %+v", todayPage.Results)
 	}
 
-	bothPage, err := store.Search(SearchOptions{Query: "shard-marker", Start: yesterday, End: today, Limit: 500})
+	bothPage, err := store.Search(t.Context(), SearchOptions{Query: "shard-marker", Start: yesterday, End: today, Limit: 500})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -78,14 +80,14 @@ func TestInsertBatch_MigratesShardWithPreLevelSchema(t *testing.T) {
 
 	// A normal write through Store must now succeed against that shard,
 	// not fail with "no column named level".
-	err = store.InsertBatch([]LogLine{
+	err = store.InsertBatch(t.Context(), []LogLine{
 		{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: today, Level: "ERROR", Content: "post-migration line"},
 	})
 	if err != nil {
 		t.Fatalf("InsertBatch against a legacy-schema shard should migrate and succeed, got: %v", err)
 	}
 
-	page, err := store.Search(SearchOptions{Query: "migration", Start: today, End: today, Limit: 500})
+	page, err := store.Search(t.Context(), SearchOptions{Query: "migration", Start: today, End: today, Limit: 500})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -102,7 +104,7 @@ func TestSearch_BrowseModeReturnsAllLinesMostRecentFirst(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Now()
 
-	if err := store.InsertBatch([]LogLine{
+	if err := store.InsertBatch(t.Context(), []LogLine{
 		{Pod: "web-1", Container: "app", Timestamp: now, Content: "browsetest first"},
 		{Pod: "web-1", Container: "app", Timestamp: now, Content: "browsetest second"},
 		{Pod: "web-1", Container: "app", Timestamp: now, Content: "browsetest third"},
@@ -110,7 +112,7 @@ func TestSearch_BrowseModeReturnsAllLinesMostRecentFirst(t *testing.T) {
 		t.Fatalf("InsertBatch: %v", err)
 	}
 
-	page, err := store.Search(SearchOptions{Start: now, End: now, Limit: 500})
+	page, err := store.Search(t.Context(), SearchOptions{Start: now, End: now, Limit: 500})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -130,14 +132,14 @@ func TestSearch_BrowseModeRespectsLevelFilter(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Now()
 
-	if err := store.InsertBatch([]LogLine{
+	if err := store.InsertBatch(t.Context(), []LogLine{
 		{Pod: "web-1", Container: "app", Timestamp: now, Level: "FATAL", Content: "browselevel fatal"},
 		{Pod: "web-1", Container: "app", Timestamp: now, Level: "INFO", Content: "browselevel info"},
 	}); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
 	}
 
-	page, err := store.Search(SearchOptions{Start: now, End: now, Limit: 500, MinLevel: "WARN"})
+	page, err := store.Search(t.Context(), SearchOptions{Start: now, End: now, Limit: 500, MinLevel: "WARN"})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -157,7 +159,7 @@ func TestSearch_BrowseModeCursorPagesThroughAllResults(t *testing.T) {
 	for i := 0; i < total; i++ {
 		lines = append(lines, LogLine{Pod: "web-1", Container: "app", Timestamp: now, Content: fmt.Sprintf("browsepage %d", i)})
 	}
-	if err := store.InsertBatch(lines); err != nil {
+	if err := store.InsertBatch(t.Context(), lines); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
 	}
 
@@ -167,7 +169,7 @@ func TestSearch_BrowseModeCursorPagesThroughAllResults(t *testing.T) {
 		if pages > total {
 			t.Fatalf("paginated more times than there are results — likely an infinite loop")
 		}
-		page, err := store.Search(SearchOptions{Start: now, End: now, Limit: 6, Cursor: cursor})
+		page, err := store.Search(t.Context(), SearchOptions{Start: now, End: now, Limit: 6, Cursor: cursor})
 		if err != nil {
 			t.Fatalf("Search (cursor=%q): %v", cursor, err)
 		}
@@ -197,7 +199,7 @@ func TestSearch_EscapesHTMLInSnippetBothModes(t *testing.T) {
 	now := time.Now()
 	malicious := `xsstest <img src=x onerror=alert(1)> & "quoted"`
 
-	if err := store.InsertBatch([]LogLine{
+	if err := store.InsertBatch(t.Context(), []LogLine{
 		{Pod: "web-1", Container: "app", Timestamp: now, Content: malicious},
 	}); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
@@ -218,7 +220,7 @@ func TestSearch_EscapesHTMLInSnippetBothModes(t *testing.T) {
 	}
 
 	t.Run("keyword search", func(t *testing.T) {
-		page, err := store.Search(SearchOptions{Query: "xsstest", Start: now, End: now, Limit: 500})
+		page, err := store.Search(t.Context(), SearchOptions{Query: "xsstest", Start: now, End: now, Limit: 500})
 		if err != nil {
 			t.Fatalf("Search: %v", err)
 		}
@@ -233,7 +235,7 @@ func TestSearch_EscapesHTMLInSnippetBothModes(t *testing.T) {
 	})
 
 	t.Run("browse mode", func(t *testing.T) {
-		page, err := store.Search(SearchOptions{Start: now, End: now, Limit: 500})
+		page, err := store.Search(t.Context(), SearchOptions{Start: now, End: now, Limit: 500})
 		if err != nil {
 			t.Fatalf("Search: %v", err)
 		}
@@ -250,13 +252,13 @@ func TestSearch_ReturnsHighlightedSnippet(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Now()
 
-	if err := store.InsertBatch([]LogLine{
+	if err := store.InsertBatch(t.Context(), []LogLine{
 		{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: now, Content: "panic: connection refused"},
 	}); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
 	}
 
-	page, err := store.Search(SearchOptions{Query: "panic", Start: now, End: now, Limit: 500})
+	page, err := store.Search(t.Context(), SearchOptions{Query: "panic", Start: now, End: now, Limit: 500})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -287,11 +289,11 @@ func TestSearch_CapsAtFiveHundredResults(t *testing.T) {
 			Timestamp: now, Content: fmt.Sprintf("captest line %d", i),
 		})
 	}
-	if err := store.InsertBatch(lines); err != nil {
+	if err := store.InsertBatch(t.Context(), lines); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
 	}
 
-	page, err := store.Search(SearchOptions{Query: "captest", Start: now, End: now, Limit: 100000})
+	page, err := store.Search(t.Context(), SearchOptions{Query: "captest", Start: now, End: now, Limit: 100000})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -309,7 +311,7 @@ func TestSearch_SkipsMissingShardsWithoutError(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Now()
 
-	page, err := store.Search(SearchOptions{Query: "anything", Start: now.AddDate(0, 0, -30), End: now, Limit: 500})
+	page, err := store.Search(t.Context(), SearchOptions{Query: "anything", Start: now.AddDate(0, 0, -30), End: now, Limit: 500})
 	if err != nil {
 		t.Fatalf("Search over a range with no shards should not error: %v", err)
 	}
@@ -334,14 +336,14 @@ func TestSearch_CapsToMostRecentShardsWhenRangeExceedsAttachLimit(t *testing.T) 
 	const totalDays = maxAttachedShards + 5
 	for i := 0; i < totalDays; i++ {
 		day := today.AddDate(0, 0, -(totalDays - 1 - i)) // i=0 is oldest
-		if err := store.InsertBatch([]LogLine{
+		if err := store.InsertBatch(t.Context(), []LogLine{
 			{Pod: "web-1", Container: "app", Timestamp: day, Content: fmt.Sprintf("attachtest-day-%02d", i)},
 		}); err != nil {
 			t.Fatalf("InsertBatch (day %d): %v", i, err)
 		}
 	}
 
-	page, err := store.Search(SearchOptions{
+	page, err := store.Search(t.Context(), SearchOptions{
 		Query: "attachtest", Start: today.AddDate(0, 0, -(totalDays - 1)), End: today, Limit: 500,
 	})
 	if err != nil {
@@ -374,7 +376,7 @@ func TestSearch_CursorPagesThroughAllResults(t *testing.T) {
 			Timestamp: now, Content: fmt.Sprintf("pagetest line %d", i),
 		})
 	}
-	if err := store.InsertBatch(lines); err != nil {
+	if err := store.InsertBatch(t.Context(), lines); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
 	}
 
@@ -384,7 +386,7 @@ func TestSearch_CursorPagesThroughAllResults(t *testing.T) {
 		if pages > total {
 			t.Fatalf("paginated more times than there are results — likely an infinite loop")
 		}
-		page, err := store.Search(SearchOptions{Query: "pagetest", Start: now, End: now, Limit: 7, Cursor: cursor})
+		page, err := store.Search(t.Context(), SearchOptions{Query: "pagetest", Start: now, End: now, Limit: 7, Cursor: cursor})
 		if err != nil {
 			t.Fatalf("Search (cursor=%q): %v", cursor, err)
 		}
@@ -412,7 +414,7 @@ func TestSearch_MinLevelFiltersAtOrAboveSeverity(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Now()
 
-	if err := store.InsertBatch([]LogLine{
+	if err := store.InsertBatch(t.Context(), []LogLine{
 		{Pod: "web-1", Container: "app", Timestamp: now, Level: "FATAL", Content: "leveltest fatal"},
 		{Pod: "web-1", Container: "app", Timestamp: now, Level: "WARN", Content: "leveltest warn"},
 		{Pod: "web-1", Container: "app", Timestamp: now, Level: "DEBUG", Content: "leveltest debug"},
@@ -421,7 +423,7 @@ func TestSearch_MinLevelFiltersAtOrAboveSeverity(t *testing.T) {
 		t.Fatalf("InsertBatch: %v", err)
 	}
 
-	page, err := store.Search(SearchOptions{Query: "leveltest", Start: now, End: now, Limit: 500, MinLevel: "WARN"})
+	page, err := store.Search(t.Context(), SearchOptions{Query: "leveltest", Start: now, End: now, Limit: 500, MinLevel: "WARN"})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -438,12 +440,79 @@ func TestSearch_MinLevelFiltersAtOrAboveSeverity(t *testing.T) {
 		}
 	}
 
-	allPage, err := store.Search(SearchOptions{Query: "leveltest", Start: now, End: now, Limit: 500})
+	allPage, err := store.Search(t.Context(), SearchOptions{Query: "leveltest", Start: now, End: now, Limit: 500})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
 	if len(allPage.Results) != 4 {
 		t.Fatalf("no MinLevel (ALL) should return every line including the unrecognized bucket, got %d", len(allPage.Results))
+	}
+}
+
+// RELEASE/v1.1.0: Pod narrows results to an exact pod match, in both
+// keyword and browse mode; an empty Pod (the UI's "All pods" default)
+// applies no filtering at all.
+func TestSearch_PodFiltersToExactMatch(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now()
+
+	if err := store.InsertBatch(t.Context(), []LogLine{
+		{Pod: "web-1", Container: "app", Timestamp: now, Content: "podtest from web-1"},
+		{Pod: "web-2", Container: "app", Timestamp: now, Content: "podtest from web-2"},
+	}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	t.Run("keyword mode", func(t *testing.T) {
+		page, err := store.Search(t.Context(), SearchOptions{Query: "podtest", Start: now, End: now, Limit: 500, Pod: "web-1"})
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if len(page.Results) != 1 || page.Results[0].Pod != "web-1" {
+			t.Fatalf("expected only web-1's line, got %+v", page.Results)
+		}
+	})
+
+	t.Run("browse mode", func(t *testing.T) {
+		page, err := store.Search(t.Context(), SearchOptions{Start: now, End: now, Limit: 500, Pod: "web-2"})
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if len(page.Results) != 1 || page.Results[0].Pod != "web-2" {
+			t.Fatalf("expected only web-2's line, got %+v", page.Results)
+		}
+	})
+
+	t.Run("empty Pod applies no filtering", func(t *testing.T) {
+		page, err := store.Search(t.Context(), SearchOptions{Query: "podtest", Start: now, End: now, Limit: 500})
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if len(page.Results) != 2 {
+			t.Fatalf("expected both pods' lines with no Pod filter, got %d", len(page.Results))
+		}
+	})
+}
+
+// Pod and MinLevel combine with AND, not OR, in both modes.
+func TestSearch_PodAndLevelFiltersCombine(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now()
+
+	if err := store.InsertBatch(t.Context(), []LogLine{
+		{Pod: "web-1", Container: "app", Timestamp: now, Level: "ERROR", Content: "combotest web-1 error"},
+		{Pod: "web-1", Container: "app", Timestamp: now, Level: "INFO", Content: "combotest web-1 info"},
+		{Pod: "web-2", Container: "app", Timestamp: now, Level: "ERROR", Content: "combotest web-2 error"},
+	}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	page, err := store.Search(t.Context(), SearchOptions{Start: now, End: now, Limit: 500, Pod: "web-1", MinLevel: "ERROR"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(page.Results) != 1 || page.Results[0].Pod != "web-1" || page.Results[0].Level != "ERROR" {
+		t.Fatalf("expected only web-1's ERROR line, got %+v", page.Results)
 	}
 }
 
@@ -455,7 +524,7 @@ func TestKnownPods_ReturnsDistinctNamesWithinWindow(t *testing.T) {
 	now := time.Now()
 	old := now.AddDate(0, 0, -10)
 
-	if err := store.InsertBatch([]LogLine{
+	if err := store.InsertBatch(t.Context(), []LogLine{
 		{Pod: "web-1", Container: "app", Timestamp: now, Content: "a"},
 		{Pod: "web-1", Container: "app", Timestamp: now, Content: "b"},
 		{Pod: "web-2", Container: "sidecar", Timestamp: now, Content: "c"},
@@ -495,7 +564,7 @@ func TestCleanupOldDBs_DeletesOnlyExpiredShards(t *testing.T) {
 	now := time.Now()
 	old := now.AddDate(0, 0, -10)
 
-	if err := store.InsertBatch([]LogLine{
+	if err := store.InsertBatch(t.Context(), []LogLine{
 		{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: now, Content: "recent"},
 		{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: old, Content: "expired"},
 	}); err != nil {
@@ -521,7 +590,7 @@ func TestLastSeen_ReturnsMostRecentTimestampForContainer(t *testing.T) {
 	now := time.Now()
 	older := now.Add(-time.Hour)
 
-	if err := store.InsertBatch([]LogLine{
+	if err := store.InsertBatch(t.Context(), []LogLine{
 		{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: older, Content: "older line"},
 		{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: now, Content: "newest line"},
 		{Pod: "web-1", Namespace: "default", Container: "sidecar", Timestamp: now.Add(time.Hour), Content: "different container"},
@@ -562,7 +631,7 @@ func TestLastSeen_FindsMarkerInPriorDayShard(t *testing.T) {
 	store := newTestStore(t)
 	yesterday := time.Now().AddDate(0, 0, -1)
 
-	if err := store.InsertBatch([]LogLine{
+	if err := store.InsertBatch(t.Context(), []LogLine{
 		{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: yesterday, Content: "yesterday's last line"},
 	}); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
@@ -577,5 +646,41 @@ func TestLastSeen_FindsMarkerInPriorDayShard(t *testing.T) {
 	}
 	if ts.Sub(yesterday).Abs() > time.Second {
 		t.Errorf("LastSeen = %v, want ~%v", ts, yesterday)
+	}
+}
+
+// RELEASE/v1.0.0 (originally planned as v0.8.0): Search honors ctx — an
+// already-cancelled context returns promptly with a context error
+// instead of running the cross-shard query to completion regardless.
+func TestSearch_CancelledContextReturnsPromptly(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now()
+	if err := store.InsertBatch(t.Context(), []LogLine{
+		{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: now, Content: "cancel-context-marker"},
+	}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // cancelled before Search ever runs
+
+	_, err := store.Search(ctx, SearchOptions{Query: "cancel-context-marker", Start: now, End: now, Limit: 500})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected a context.Canceled error, got: %v", err)
+	}
+}
+
+// Same guarantee on the write side: InsertBatch must not silently insert
+// against an already-cancelled context.
+func TestInsertBatch_CancelledContextReturnsError(t *testing.T) {
+	store := newTestStore(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	err := store.InsertBatch(ctx, []LogLine{
+		{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: time.Now(), Content: "should not be inserted"},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected a context.Canceled error, got: %v", err)
 	}
 }

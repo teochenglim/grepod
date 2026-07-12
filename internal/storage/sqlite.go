@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"fmt"
@@ -208,10 +209,16 @@ func migrateLegacySchema(db *sql.DB, path string) error {
 
 // InsertBatch writes a batch of log lines, grouping by ingestion date so
 // that each line lands in the correct daily shard, and using a single
-// transaction per shard for throughput.
-func (s *Store) InsertBatch(lines []LogLine) error {
+// transaction per shard for throughput. ctx bounds the whole call — see
+// DESIGN/03#context-bounded-queries-v080 for why BatchQueue.flush passes a
+// bounded-but-generous context here rather than context.Background(),
+// even though ingestion isn't request-driven.
+func (s *Store) InsertBatch(ctx context.Context, lines []LogLine) error {
 	if len(lines) == 0 {
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	byDate := make(map[string][]LogLine)
@@ -225,28 +232,28 @@ func (s *Store) InsertBatch(lines []LogLine) error {
 		if err != nil {
 			return err
 		}
-		if err := insertGroup(db, group); err != nil {
+		if err := insertGroup(ctx, db, group); err != nil {
 			return fmt.Errorf("insert into shard %s: %w", date, err)
 		}
 	}
 	return nil
 }
 
-func insertGroup(db *sql.DB, lines []LogLine) error {
-	tx, err := db.Begin()
+func insertGroup(ctx context.Context, db *sql.DB, lines []LogLine) error {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op if committed
 
-	stmt, err := tx.Prepare(`INSERT INTO fts (pod, namespace, container, timestamp, level, line) VALUES (?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO fts (pod, namespace, container, timestamp, level, line) VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, l := range lines {
-		if _, err := stmt.Exec(l.Pod, l.Namespace, l.Container, l.Timestamp.Format(time.RFC3339Nano), l.Level, l.Content); err != nil {
+		if _, err := stmt.ExecContext(ctx, l.Pod, l.Namespace, l.Container, l.Timestamp.Format(time.RFC3339Nano), l.Level, l.Content); err != nil {
 			return err
 		}
 	}
@@ -276,6 +283,7 @@ type SearchOptions struct {
 	Limit    int    // <= 0 or > 500 clamps to 500
 	Cursor   string // opaque, from a previous SearchPage.NextCursor; "" starts from the top
 	MinLevel string // "" (or unrecognized, e.g. the "ALL" tab) = no level filtering; else matches this level and anything more severe, per levelOrder
+	Pod      string // "" (the UI's "All pods" default) = no pod filtering; else an exact match
 }
 
 // SearchPage is one page of Search results plus the cursor for the next
@@ -360,8 +368,15 @@ func escapeSnippet(raw string) string {
 // first, no MATCH — bm25() and snippet() are only meaningful in the
 // context of an active MATCH, so browse mode returns the raw line
 // instead of a snippet and leaves Rank at its zero value. Shards with no
-// file on disk for a given date are skipped silently.
-func (s *Store) Search(opts SearchOptions) (SearchPage, error) {
+// file on disk for a given date are skipped silently. ctx bounds the
+// ATTACH calls and the main query — an already-cancelled ctx (or one
+// that expires mid-query, e.g. a disconnected /api/search client, see
+// DESIGN/03#context-bounded-queries-v080) returns promptly with ctx's error
+// rather than running the cross-shard query to completion regardless.
+func (s *Store) Search(ctx context.Context, opts SearchOptions) (SearchPage, error) {
+	if err := ctx.Err(); err != nil {
+		return SearchPage{}, err
+	}
 	limit := opts.Limit
 	if limit <= 0 || limit > 500 {
 		limit = 500
@@ -388,6 +403,7 @@ func (s *Store) Search(opts SearchOptions) (SearchPage, error) {
 		cursor = &c
 	}
 	levels, filterLevel := levelsAtOrAbove(opts.MinLevel)
+	filterPod := opts.Pod != ""
 
 	// A dedicated in-memory connection hosts the ATTACHed shards for the
 	// lifetime of this single query.
@@ -401,7 +417,7 @@ func (s *Store) Search(opts SearchOptions) (SearchPage, error) {
 	var args []any
 	for _, date := range dates {
 		alias := "d" + strings.ReplaceAll(date, "-", "")
-		if _, err := conn.Exec(fmt.Sprintf(`ATTACH DATABASE ? AS %s`, alias), s.dbPath(date)); err != nil {
+		if _, err := conn.ExecContext(ctx, fmt.Sprintf(`ATTACH DATABASE ? AS %s`, alias), s.dbPath(date)); err != nil {
 			// Shouldn't normally happen since we just os.Stat'd the file,
 			// but skip rather than fail the whole query.
 			slog.Warn("failed to attach shard", "date", date, "err", err)
@@ -413,19 +429,33 @@ func (s *Store) Search(opts SearchOptions) (SearchPage, error) {
 		// every other reference in this SELECT can use that instead.
 		// shard is embedded as a literal (not a bind param): alias is
 		// derived entirely from the YYYY-MM-DD date, never user input.
+		// conditions/condArgs collect this shard's optional WHERE clauses
+		// (level, pod) so browse and keyword mode can share the same
+		// combining logic instead of each hand-rolling WHERE-vs-AND.
+		var conditions []string
+		var condArgs []any
+		if filterLevel {
+			placeholders := make([]string, len(levels))
+			for i, l := range levels {
+				placeholders[i] = "?"
+				condArgs = append(condArgs, l)
+			}
+			conditions = append(conditions, "level IN ("+strings.Join(placeholders, ",")+")")
+		}
+		if filterPod {
+			conditions = append(conditions, "pod = ?")
+			condArgs = append(condArgs, opts.Pod)
+		}
+
 		var sel string
 		if browseMode {
 			sel = fmt.Sprintf(
 				`SELECT pod, namespace, container, timestamp, level,
 					line AS snip, 0.0 AS rank, '%[2]s' AS shard, fts.rowid AS local_rowid
 				 FROM %[1]s.fts AS fts`, alias, alias)
-			if filterLevel {
-				placeholders := make([]string, len(levels))
-				for i, l := range levels {
-					placeholders[i] = "?"
-					args = append(args, l)
-				}
-				sel += " WHERE level IN (" + strings.Join(placeholders, ",") + ")"
+			if len(conditions) > 0 {
+				sel += " WHERE " + strings.Join(conditions, " AND ")
+				args = append(args, condArgs...)
 			}
 		} else {
 			sel = fmt.Sprintf(
@@ -434,14 +464,10 @@ func (s *Store) Search(opts SearchOptions) (SearchPage, error) {
 					bm25(fts) AS rank, '%[2]s' AS shard, fts.rowid AS local_rowid
 				 FROM %[1]s.fts AS fts WHERE fts MATCH ?`, alias, alias, snippetMarkStart, snippetMarkEnd)
 			args = append(args, query)
-			if filterLevel {
-				placeholders := make([]string, len(levels))
-				for i, l := range levels {
-					placeholders[i] = "?"
-					args = append(args, l)
-				}
-				sel += " AND level IN (" + strings.Join(placeholders, ",") + ")"
+			for _, c := range conditions {
+				sel += " AND " + c
 			}
+			args = append(args, condArgs...)
 		}
 		selects = append(selects, sel)
 	}
@@ -468,7 +494,7 @@ func (s *Store) Search(opts SearchOptions) (SearchPage, error) {
 	// separate COUNT query.
 	args = append(args, limit+1)
 
-	rows, err := conn.Query(sqlText, args...)
+	rows, err := conn.QueryContext(ctx, sqlText, args...)
 	if err != nil {
 		return SearchPage{}, fmt.Errorf("search query: %w", err)
 	}

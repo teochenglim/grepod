@@ -18,6 +18,10 @@ never `DaemonSet`, never more than one replica. Module:
    version-specific history and rationale live — not here.
 4. [k8s/README.md](k8s/README.md) / [helm/README.md](helm/README.md) —
    deployment, kept in sync as two interfaces to the same decisions.
+5. [COMPATIBILITY.md](COMPATIBILITY.md) — as of `v1.0.0`, what's SemVer-stable
+   (env vars, HTTP API shapes, Helm `values.yaml` keys) and what's
+   deliberately out of scope. Check before renaming/removing any of
+   these — it's a breaking change, not a routine edit.
 
 ## Where things go
 
@@ -75,6 +79,15 @@ order:
    to tag — implemented and verified locally, uncommitted.` only when a
    turn stops before the release's scope is actually finished. See
    [RELEASE.md](RELEASE.md) for the full two-state explanation.
+
+   **Queued releases stay `ready to tag`, even if fully implemented.**
+   If a second version's work (e.g. `vX.Y+1.0`) gets done in the same
+   session before the prior one (`vX.Y.0`) has an actual `git tag` —
+   check `git tag --list`, don't infer from a doc's own status line —
+   the later version's status stays `ready to tag`, not `shipped,
+   tagged`, until the one ahead of it is real. Releases land in git tag
+   order; two consecutive doc files both claiming "shipped" while zero
+   new tags exist is confusing, not a cue.
 2. **User**: reviews, then does `git add` / `git commit` /
    `make release VERSION=x.y.z` manually, immediately after Claude
    finishes step 1 — not a separate later session.
