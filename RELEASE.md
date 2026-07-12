@@ -12,6 +12,7 @@ One row per version, newest first. Each links to its detail file in
 | [v0.5.0](RELEASE/v0.5.0.md) | Live tail UI + search UX | Not started | |
 | [v0.4.0](RELEASE/v0.4.0.md) | Live tail backend (`/api/tail`) | Not started | |
 | [v0.3.0](RELEASE/v0.3.0.md) | Observability (health, metrics, logging) | Not started | |
+| [v0.2.1](RELEASE/v0.2.1.md) | Security workflow fixes | Not started | Fixes all 3 jobs that failed on v0.2.0's tag push. |
 | [v0.2.0](RELEASE/v0.2.0.md) | Architecture-driven test suite | Shipped | Tagged. Also fixed 3 real bugs the tests surfaced — see below. |
 | [v0.1.0](RELEASE/v0.1.0.md) | Core tail-index-search loop | Shipped | Tagged and pushed. |
 
