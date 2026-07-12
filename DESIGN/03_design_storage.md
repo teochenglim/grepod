@@ -71,11 +71,25 @@ containing a single `fts` virtual table (`FTS5`) with columns `pod`,
 `namespace`, `container`, `timestamp`, `level`, `line` — all `UNINDEXED`
 except `line` itself, which FTS5 tokenizes and indexes.
 
-**Breaking, pre-1.0:** `level` was added in v0.3.0. Shard files from
-before that release don't have the column; no migration is attempted —
-delete and re-ingest, same as any pre-1.0 schema change (grepod has no
-compatibility guarantee before v1.0.0 — see
-[RELEASE/v1.0.0](../RELEASE/v1.0.0.md)).
+**Breaking, pre-1.0:** `level` was added in v0.3.0. `CREATE VIRTUAL TABLE
+IF NOT EXISTS` is a no-op against a shard file that already has an `fts`
+table, so a shard predating that release would otherwise keep its
+original 5-column schema forever — and FTS5 tables reject `ALTER TABLE`
+outright (`"virtual tables may not be altered"`, confirmed against
+`modernc.org/sqlite`; there's no in-place `ADD COLUMN` for FTS5). As of
+v0.5.2, `getOrOpenDB` detects this (`pragma_table_info('fts')`) and
+rebuilds the table — `DROP TABLE` + recreate, the only option available —
+the first time that shard is opened for a write. This loses that shard's
+pre-migration rows (delete-and-re-ingest, same stance as any other
+pre-1.0 schema change — grepod has no compatibility guarantee before
+v1.0.0, see [RELEASE/v1.0.0](../RELEASE/v1.0.0.md)), but is a strict
+improvement over the alternative: without it, *every* insert into that
+shard fails, not just the pre-migration rows' searchability — see
+[RELEASE/v0.5.2](../RELEASE/v0.5.2.md) for how that surfaced. One gap
+remains: `Search`'s per-query `ATTACH` (below) bypasses `getOrOpenDB`
+entirely, so a legacy shard that's only ever searched, never written to
+again, still fails its `SELECT` with `"no such column: level"` — manual
+delete-and-re-ingest is still the answer for that case.
 
 Sharding by day rather than one giant table makes two operations cheap
 that would otherwise be expensive at scale:

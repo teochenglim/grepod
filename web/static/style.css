@@ -6,6 +6,11 @@
   --muted: #8b949e;
   --accent: #58a6ff;
   --mark-bg: #f0883e;
+  --level-fatal: #da3633;
+  --level-error: #f85149;
+  --level-warn: #f0883e;
+  --level-info: #58a6ff;
+  --level-debug: #8b949e;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 * { box-sizing: border-box; }
@@ -123,6 +128,16 @@ header .sub {
   border-color: var(--accent);
   font-weight: 600;
 }
+.level-tab.level-fatal { color: var(--level-fatal); border-color: var(--level-fatal); }
+.level-tab.level-error { color: var(--level-error); border-color: var(--level-error); }
+.level-tab.level-warn { color: var(--level-warn); border-color: var(--level-warn); }
+.level-tab.level-info { color: var(--level-info); border-color: var(--level-info); }
+.level-tab.level-debug { color: var(--level-debug); border-color: var(--level-debug); }
+.level-tab.level-fatal.active { background: var(--level-fatal); border-color: var(--level-fatal); color: #fff; }
+.level-tab.level-error.active { background: var(--level-error); border-color: var(--level-error); color: #0d1117; }
+.level-tab.level-warn.active { background: var(--level-warn); border-color: var(--level-warn); color: #0d1117; }
+.level-tab.level-info.active { background: var(--level-info); border-color: var(--level-info); color: #0d1117; }
+.level-tab.level-debug.active { background: var(--level-debug); border-color: var(--level-debug); color: #0d1117; }
 .status {
   padding: 8px 20px;
   color: var(--muted);

@@ -21,21 +21,22 @@
     <div class="toolbar">
       <input type="date" id="start">
       <input type="date" id="end">
-      <input type="text" id="query" placeholder="Search logs... (press Enter)">
+      <input type="text" id="query" placeholder="Filter logs... (optional, press Enter)">
       <button id="searchBtn">Search</button>
       <label class="group-toggle"><input type="checkbox" id="groupToggle"> Group occurrences</label>
     </div>
 
     <div class="level-tabs" id="levelTabs">
       <button class="level-tab active" data-level="">ALL</button>
-      <button class="level-tab" data-level="INFO">INFO</button>
-      <button class="level-tab" data-level="WARN">WARN</button>
-      <button class="level-tab" data-level="DEBUG">DEBUG</button>
-      <button class="level-tab" data-level="FATAL">FATAL</button>
+      <button class="level-tab level-fatal" data-level="FATAL">FATAL</button>
+      <button class="level-tab level-error" data-level="ERROR">ERROR</button>
+      <button class="level-tab level-warn" data-level="WARN">WARN</button>
+      <button class="level-tab level-info" data-level="INFO">INFO</button>
+      <button class="level-tab level-debug" data-level="DEBUG">DEBUG</button>
     </div>
 
-    <div class="status" id="status">Ready.</div>
-    <div id="results"><div class="empty">Enter a keyword and press Search.</div></div>
+    <div class="status" id="status">Loading logs...</div>
+    <div id="results"><div class="empty">Loading logs...</div></div>
     <div class="load-more-wrap"><button id="loadMoreBtn" hidden>Load more</button></div>
   </section>
 

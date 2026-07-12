@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"html"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -90,9 +91,15 @@ func (s *Store) dbPath(date string) string {
 }
 
 // Breaking, pre-1.0: this schema gained the `level` column in v0.3.0.
-// Existing shard files predating that change won't have it — no
-// migration is attempted; delete and re-ingest, same as any other
-// pre-1.0 schema change (see RELEASE/v0.3.0.md).
+// Existing shard files predating that change won't have it —
+// getOrOpenDB's migrateLegacySchema rebuilds the table on next write (see
+// its doc comment for why that's a rebuild, not an in-place ALTER TABLE),
+// but a shard that's never written to again — only searched — still hits
+// this the old way: Search's per-query ATTACH bypasses getOrOpenDB
+// entirely, so a stale historical shard's SELECT still fails with "no
+// such column: level". Delete and re-ingest for that case, same as any
+// other pre-1.0 schema change (see RELEASE/v0.3.0.md and
+// RELEASE/v0.5.2.md).
 const schema = `
 CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(
 	pod UNINDEXED,
@@ -125,9 +132,44 @@ func (s *Store) getOrOpenDB(date string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("init schema for %s: %w", path, err)
 	}
+	if err := migrateLegacySchema(db, path); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate schema for %s: %w", path, err)
+	}
 
 	s.dbs[date] = db
 	return db, nil
+}
+
+// migrateLegacySchema detects a shard whose fts table was created before
+// v0.3.0 added the level column (CREATE VIRTUAL TABLE IF NOT EXISTS is a
+// no-op against an already-existing table, so the schema constant above
+// never touches it) and rebuilds the table under the current schema.
+// FTS5 virtual tables reject ALTER TABLE outright ("virtual tables may
+// not be altered" — verified against modernc.org/sqlite; there is no
+// in-place ADD COLUMN for FTS5), so the only fix is DROP + recreate,
+// which loses that shard's pre-migration rows. Worth it anyway: without
+// this, every single insert into that shard fails forever (not just
+// historical search) — see RELEASE/v0.5.2.md for how this actually
+// surfaced (a shard reused across a schema change kept "today's" writes
+// permanently failing until the next UTC day rolled over a fresh shard).
+func migrateLegacySchema(db *sql.DB, path string) error {
+	var hasLevel int
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('fts') WHERE name = 'level'`).Scan(&hasLevel); err != nil {
+		return fmt.Errorf("check for level column: %w", err)
+	}
+	if hasLevel > 0 {
+		return nil
+	}
+
+	if _, err := db.Exec(`DROP TABLE fts`); err != nil {
+		return fmt.Errorf("drop legacy fts table: %w", err)
+	}
+	if _, err := db.Exec(schema); err != nil {
+		return fmt.Errorf("recreate fts table: %w", err)
+	}
+	slog.Warn("rebuilt shard with a pre-v0.3.0 schema (missing level column); its prior rows were dropped", "shard", path)
+	return nil
 }
 
 // InsertBatch writes a batch of log lines, grouping by ingestion date so
@@ -210,18 +252,26 @@ type SearchPage struct {
 }
 
 // searchCursor is a keyset pagination cursor over Search's actual sort
-// order (bm25 rank, then shard, then the per-shard FTS5 rowid as a
-// tiebreaker) — cheap across the UNION ALL of attached shards, unlike
-// OFFSET, which would have to walk and discard every prior row on every
-// attached shard on every page.
+// order — cheap across the UNION ALL of attached shards, unlike OFFSET,
+// which would have to walk and discard every prior row on every attached
+// shard on every page. The sort key differs by mode (see Search):
+// Browse orders by recency (shard, then the per-shard FTS5 rowid, both
+// descending) since there's no relevance score without a MATCH; a
+// keyword query orders by bm25 rank ascending, shard/rowid as a
+// tiebreaker for ties.
 type searchCursor struct {
-	Rank  float64
-	Shard string
-	RowID int64
+	Browse bool
+	Rank   float64
+	Shard  string
+	RowID  int64
 }
 
 func encodeCursor(c searchCursor) string {
-	raw := strconv.FormatFloat(c.Rank, 'x', -1, 64) + "|" + c.Shard + "|" + strconv.FormatInt(c.RowID, 10)
+	mode := "m"
+	if c.Browse {
+		mode = "b"
+	}
+	raw := mode + "|" + strconv.FormatFloat(c.Rank, 'x', -1, 64) + "|" + c.Shard + "|" + strconv.FormatInt(c.RowID, 10)
 	return base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 
@@ -230,30 +280,59 @@ func decodeCursor(s string) (searchCursor, error) {
 	if err != nil {
 		return searchCursor{}, fmt.Errorf("invalid cursor: %w", err)
 	}
-	parts := strings.SplitN(string(raw), "|", 3)
-	if len(parts) != 3 {
+	parts := strings.SplitN(string(raw), "|", 4)
+	if len(parts) != 4 {
 		return searchCursor{}, fmt.Errorf("invalid cursor")
 	}
-	rank, err := strconv.ParseFloat(parts[0], 64)
+	rank, err := strconv.ParseFloat(parts[1], 64)
 	if err != nil {
 		return searchCursor{}, fmt.Errorf("invalid cursor: %w", err)
 	}
-	rowID, err := strconv.ParseInt(parts[2], 10, 64)
+	rowID, err := strconv.ParseInt(parts[3], 10, 64)
 	if err != nil {
 		return searchCursor{}, fmt.Errorf("invalid cursor: %w", err)
 	}
-	return searchCursor{Rank: rank, Shard: parts[1], RowID: rowID}, nil
+	return searchCursor{Browse: parts[0] == "b", Rank: rank, Shard: parts[2], RowID: rowID}, nil
 }
 
-// Search runs a full-text query across every daily shard that exists in
-// [opts.Start, opts.End] (inclusive), ranking hits with FTS5's bm25() and
-// returning a highlighted snippet for each hit. Shards with no file on
-// disk for a given date are skipped silently.
+// snippetMarkStart/End are sentinel bytes substituted for SQLite's own
+// snippet() start/end markup, extremely unlikely to occur in real log
+// text — see escapeSnippet for why literal "<mark>"/"</mark>" markup
+// can't be passed to snippet() directly.
+const snippetMarkStart, snippetMarkEnd = "\x01", "\x02"
+
+// escapeSnippet HTML-escapes raw log content before it's ever sent to the
+// browser, then turns the sentinel bytes into the real <mark>/</mark>
+// tags the UI renders via innerHTML. Order matters: snippet()/the raw
+// `line` column can contain anything a log line can contain, including
+// "<", "&", or literal HTML — escaping first and only then reintroducing
+// the sentinels-turned-tags guarantees the only real markup in the
+// output is the highlighting grepod itself added, not anything reflected
+// unescaped from log content (which predates this function and would
+// otherwise be a stored-XSS vector: a log line containing e.g.
+// "<img src=x onerror=...>" rendered as-is via the UI's `innerHTML`).
+func escapeSnippet(raw string) string {
+	escaped := html.EscapeString(raw)
+	escaped = strings.ReplaceAll(escaped, snippetMarkStart, "<mark>")
+	escaped = strings.ReplaceAll(escaped, snippetMarkEnd, "</mark>")
+	return escaped
+}
+
+// Search runs a query across every daily shard that exists in
+// [opts.Start, opts.End] (inclusive). With opts.Query set, it's a
+// full-text search: FTS5 MATCH, ranked by bm25(), with a highlighted
+// snippet per hit. With opts.Query empty, it's browse mode: every line
+// in range (optionally narrowed by opts.MinLevel), ordered most-recent
+// first, no MATCH — bm25() and snippet() are only meaningful in the
+// context of an active MATCH, so browse mode returns the raw line
+// instead of a snippet and leaves Rank at its zero value. Shards with no
+// file on disk for a given date are skipped silently.
 func (s *Store) Search(opts SearchOptions) (SearchPage, error) {
 	limit := opts.Limit
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
+	browseMode := opts.Query == ""
 	query := sanitizeMatchQuery(opts.Query)
 
 	var dates []string
@@ -301,19 +380,35 @@ func (s *Store) Search(opts SearchOptions) (SearchPage, error) {
 		// every other reference in this SELECT can use that instead.
 		// shard is embedded as a literal (not a bind param): alias is
 		// derived entirely from the YYYY-MM-DD date, never user input.
-		sel := fmt.Sprintf(
-			`SELECT pod, namespace, container, timestamp, level,
-				snippet(fts, 5, '<mark>', '</mark>', '...', 64) AS snip,
-				bm25(fts) AS rank, '%[2]s' AS shard, fts.rowid AS local_rowid
-			 FROM %[1]s.fts AS fts WHERE fts MATCH ?`, alias, alias)
-		args = append(args, query)
-		if filterLevel {
-			placeholders := make([]string, len(levels))
-			for i, l := range levels {
-				placeholders[i] = "?"
-				args = append(args, l)
+		var sel string
+		if browseMode {
+			sel = fmt.Sprintf(
+				`SELECT pod, namespace, container, timestamp, level,
+					line AS snip, 0.0 AS rank, '%[2]s' AS shard, fts.rowid AS local_rowid
+				 FROM %[1]s.fts AS fts`, alias, alias)
+			if filterLevel {
+				placeholders := make([]string, len(levels))
+				for i, l := range levels {
+					placeholders[i] = "?"
+					args = append(args, l)
+				}
+				sel += " WHERE level IN (" + strings.Join(placeholders, ",") + ")"
 			}
-			sel += " AND level IN (" + strings.Join(placeholders, ",") + ")"
+		} else {
+			sel = fmt.Sprintf(
+				`SELECT pod, namespace, container, timestamp, level,
+					snippet(fts, 5, '%[3]s', '%[4]s', '...', 64) AS snip,
+					bm25(fts) AS rank, '%[2]s' AS shard, fts.rowid AS local_rowid
+				 FROM %[1]s.fts AS fts WHERE fts MATCH ?`, alias, alias, snippetMarkStart, snippetMarkEnd)
+			args = append(args, query)
+			if filterLevel {
+				placeholders := make([]string, len(levels))
+				for i, l := range levels {
+					placeholders[i] = "?"
+					args = append(args, l)
+				}
+				sel += " AND level IN (" + strings.Join(placeholders, ",") + ")"
+			}
 		}
 		selects = append(selects, sel)
 	}
@@ -323,11 +418,19 @@ func (s *Store) Search(opts SearchOptions) (SearchPage, error) {
 
 	sqlText := "SELECT pod, namespace, container, timestamp, level, snip, rank, shard, local_rowid FROM (\n" +
 		strings.Join(selects, "\nUNION ALL\n") + "\n)"
-	if cursor != nil {
+	switch {
+	case cursor != nil && browseMode:
+		sqlText += "\nWHERE shard < ? OR (shard = ? AND local_rowid < ?)"
+		args = append(args, cursor.Shard, cursor.Shard, cursor.RowID)
+	case cursor != nil:
 		sqlText += "\nWHERE rank > ? OR (rank = ? AND (shard > ? OR (shard = ? AND local_rowid > ?)))"
 		args = append(args, cursor.Rank, cursor.Rank, cursor.Shard, cursor.Shard, cursor.RowID)
 	}
-	sqlText += "\nORDER BY rank ASC, shard ASC, local_rowid ASC\nLIMIT ?"
+	if browseMode {
+		sqlText += "\nORDER BY shard DESC, local_rowid DESC\nLIMIT ?"
+	} else {
+		sqlText += "\nORDER BY rank ASC, shard ASC, local_rowid ASC\nLIMIT ?"
+	}
 	// Fetch one extra row so a next page's existence is known without a
 	// separate COUNT query.
 	args = append(args, limit+1)
@@ -349,6 +452,7 @@ func (s *Store) Search(opts SearchOptions) (SearchPage, error) {
 		if err := rows.Scan(&r.Pod, &r.Namespace, &r.Container, &r.Timestamp, &r.Level, &r.Snippet, &r.Rank, &r.shard, &r.rowID); err != nil {
 			return SearchPage{}, fmt.Errorf("scan result: %w", err)
 		}
+		r.Snippet = escapeSnippet(r.Snippet)
 		raw = append(raw, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -365,7 +469,7 @@ func (s *Store) Search(opts SearchOptions) (SearchPage, error) {
 	}
 	if len(raw) > limit {
 		last := raw[limit-1]
-		page.NextCursor = encodeCursor(searchCursor{Rank: last.Rank, Shard: last.shard, RowID: last.rowID})
+		page.NextCursor = encodeCursor(searchCursor{Browse: browseMode, Rank: last.Rank, Shard: last.shard, RowID: last.rowID})
 	}
 	return page, nil
 }

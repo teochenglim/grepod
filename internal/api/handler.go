@@ -118,12 +118,13 @@ type searchResponse struct {
 	NextCursor string                 `json:"next_cursor"`
 }
 
+// handleSearch serves both full-text search and browse mode: q is
+// optional (DESIGN/04) — omitting it (or passing an empty/whitespace-only
+// value) browses every line in [start, end] (optionally narrowed by
+// level), most-recent-first, instead of requiring a keyword just to see
+// what's there.
 func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("q")
-	if q == "" {
-		writeJSONError(w, http.StatusBadRequest, "missing required query param: q")
-		return
-	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
 
 	now := time.Now()
 	today := now.Format(dateLayout)

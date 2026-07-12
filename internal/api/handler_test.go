@@ -39,18 +39,43 @@ func doGet(h *Handler, target string) *httptest.ResponseRecorder {
 	return w
 }
 
-// DESIGN/04: q is required.
-func TestHandleSearch_MissingQueryReturns400(t *testing.T) {
-	w := doGet(newTestHandler(t, true), "/api/search")
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+// DESIGN/04: q is optional — omitting it browses every line in range
+// instead of erroring.
+func TestHandleSearch_MissingQueryBrowsesInsteadOf400(t *testing.T) {
+	store, err := storage.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
 	}
-	var body map[string]string
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("response was not JSON: %v", err)
+	t.Cleanup(store.Close)
+	if err := store.InsertBatch([]storage.LogLine{
+		{Pod: "web-1", Container: "app", Timestamp: time.Now(), Content: "browse-mode line"},
+	}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
 	}
-	if body["error"] == "" {
-		t.Error("expected a non-empty JSON error message")
+	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, storage.NewBroadcaster())
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+
+	w := doGet(h, "/api/search")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp searchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response was not valid JSON: %v", err)
+	}
+	if resp.Count != 1 || resp.Results[0].Snippet != "browse-mode line" {
+		t.Fatalf("expected browse mode to surface the ingested line unhighlighted, got %+v", resp.Results)
+	}
+}
+
+// A whitespace-only q must also fall into browse mode rather than being
+// treated as a (whitespace) search term.
+func TestHandleSearch_WhitespaceQueryBrowses(t *testing.T) {
+	w := doGet(newTestHandler(t, true), "/api/search?q=%20%20")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
 }
 

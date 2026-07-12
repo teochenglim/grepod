@@ -95,12 +95,11 @@
   let nextCursor = '';
   let currentLevel = '';
 
+  // q is optional: an empty query browses every line in range
+  // (most-recent-first) instead of requiring a keyword just to see
+  // what's there. A keyword narrows that same view, it isn't required to
+  // unlock it.
   function runSearch() {
-    const q = queryEl.value.trim();
-    if (!q) {
-      statusEl.textContent = 'Type a keyword first.';
-      return;
-    }
     allResults = [];
     nextCursor = '';
     fetchPage(true);
@@ -108,9 +107,8 @@
 
   async function fetchPage(isFirstPage) {
     const q = queryEl.value.trim();
-    if (!q) return;
 
-    statusEl.textContent = isFirstPage ? 'Searching...' : 'Loading more...';
+    statusEl.textContent = isFirstPage ? (q ? 'Searching...' : 'Loading logs...') : 'Loading more...';
     loadMoreBtn.hidden = true;
 
     const params = new URLSearchParams({
@@ -130,7 +128,8 @@
       }
       allResults = isFirstPage ? (data.results || []) : allResults.concat(data.results || []);
       nextCursor = data.next_cursor || '';
-      statusEl.textContent = allResults.length + ' result(s) for "' + data.query + '" (' + data.start + ' to ' + data.end + ')' + (nextCursor ? ', more available' : '');
+      const label = data.query ? '"' + data.query + '"' : 'all logs';
+      statusEl.textContent = allResults.length + ' result(s) for ' + label + ' (' + data.start + ' to ' + data.end + ')' + (nextCursor ? ', more available' : '');
       renderSearchResults();
       loadMoreBtn.hidden = !nextCursor;
     } catch (err) {
@@ -217,8 +216,14 @@
     for (const el of levelTabsEl.querySelectorAll('.level-tab')) el.classList.remove('active');
     btn.classList.add('active');
     currentLevel = btn.dataset.level;
-    if (queryEl.value.trim()) runSearch();
+    runSearch();
   });
+
+  // Default view: browse the last h.defaultSearchDays-matching window
+  // (dates already defaulted above) with no keyword, so there's
+  // something to look at immediately instead of an empty "type something"
+  // prompt.
+  runSearch();
 
   // ===================== Tail =====================
 

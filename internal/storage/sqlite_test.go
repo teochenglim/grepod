@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
@@ -45,6 +46,202 @@ func TestInsertBatch_SplitsAcrossDailyShards(t *testing.T) {
 	if len(bothPage.Results) != 2 {
 		t.Fatalf("searching yesterday..today should surface both shards' lines, got %d", len(bothPage.Results))
 	}
+}
+
+// RELEASE/v0.5.2: a shard file created before v0.3.0 added the level
+// column keeps its original 5-column schema forever, since CREATE
+// VIRTUAL TABLE IF NOT EXISTS no-ops against an existing table — every
+// subsequent insert into that shard used to fail outright ("table fts
+// has no column named level"), not just historical search. getOrOpenDB
+// must detect this and rebuild the table so writes succeed again.
+func TestInsertBatch_MigratesShardWithPreLevelSchema(t *testing.T) {
+	store := newTestStore(t)
+	today := time.Now()
+	date := today.Format(dateLayout)
+
+	// Simulate a shard left over from before the level column existed:
+	// create the file directly with the old 5-column schema, bypassing
+	// Store entirely.
+	legacyDB, err := sql.Open("sqlite", store.dbPath(date))
+	if err != nil {
+		t.Fatalf("open legacy shard: %v", err)
+	}
+	if _, err := legacyDB.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(pod UNINDEXED, namespace UNINDEXED, container UNINDEXED, timestamp UNINDEXED, line)`); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	if _, err := legacyDB.Exec(`INSERT INTO fts (pod, namespace, container, timestamp, line) VALUES ('old-pod','default','app','t0','pre-migration line')`); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatalf("close legacy shard: %v", err)
+	}
+
+	// A normal write through Store must now succeed against that shard,
+	// not fail with "no column named level".
+	err = store.InsertBatch([]LogLine{
+		{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: today, Level: "ERROR", Content: "post-migration line"},
+	})
+	if err != nil {
+		t.Fatalf("InsertBatch against a legacy-schema shard should migrate and succeed, got: %v", err)
+	}
+
+	page, err := store.Search(SearchOptions{Query: "migration", Start: today, End: today, Limit: 500})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(page.Results) != 1 || page.Results[0].Level != "ERROR" {
+		t.Fatalf("expected exactly the post-migration line with its level preserved, got %+v", page.Results)
+	}
+}
+
+// RELEASE/v0.5.3: an empty Query is browse mode — every line in range,
+// most-recent-first, no keyword required. Ordering is by insertion
+// (shard, then per-shard rowid, both descending), which for a single
+// shard inserted in chronological order matches recency.
+func TestSearch_BrowseModeReturnsAllLinesMostRecentFirst(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now()
+
+	if err := store.InsertBatch([]LogLine{
+		{Pod: "web-1", Container: "app", Timestamp: now, Content: "browsetest first"},
+		{Pod: "web-1", Container: "app", Timestamp: now, Content: "browsetest second"},
+		{Pod: "web-1", Container: "app", Timestamp: now, Content: "browsetest third"},
+	}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	page, err := store.Search(SearchOptions{Start: now, End: now, Limit: 500})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(page.Results) != 3 {
+		t.Fatalf("expected all 3 lines with no keyword filtering, got %d", len(page.Results))
+	}
+	want := []string{"browsetest third", "browsetest second", "browsetest first"}
+	for i, w := range want {
+		if page.Results[i].Snippet != w {
+			t.Errorf("result %d: Snippet = %q, want %q (most-recent-first)", i, page.Results[i].Snippet, w)
+		}
+	}
+}
+
+// RELEASE/v0.5.3: browse mode still respects MinLevel.
+func TestSearch_BrowseModeRespectsLevelFilter(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now()
+
+	if err := store.InsertBatch([]LogLine{
+		{Pod: "web-1", Container: "app", Timestamp: now, Level: "FATAL", Content: "browselevel fatal"},
+		{Pod: "web-1", Container: "app", Timestamp: now, Level: "INFO", Content: "browselevel info"},
+	}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	page, err := store.Search(SearchOptions{Start: now, End: now, Limit: 500, MinLevel: "WARN"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(page.Results) != 1 || page.Results[0].Level != "FATAL" {
+		t.Fatalf("expected only the FATAL line in browse mode with MinLevel=WARN, got %+v", page.Results)
+	}
+}
+
+// RELEASE/v0.5.3: browse mode's cursor pages through all results exactly
+// once each too, same guarantee as keyword search's cursor.
+func TestSearch_BrowseModeCursorPagesThroughAllResults(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now()
+
+	const total = 25
+	lines := make([]LogLine, 0, total)
+	for i := 0; i < total; i++ {
+		lines = append(lines, LogLine{Pod: "web-1", Container: "app", Timestamp: now, Content: fmt.Sprintf("browsepage %d", i)})
+	}
+	if err := store.InsertBatch(lines); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	seen := make(map[string]bool)
+	cursor := ""
+	for pages := 0; ; pages++ {
+		if pages > total {
+			t.Fatalf("paginated more times than there are results — likely an infinite loop")
+		}
+		page, err := store.Search(SearchOptions{Start: now, End: now, Limit: 6, Cursor: cursor})
+		if err != nil {
+			t.Fatalf("Search (cursor=%q): %v", cursor, err)
+		}
+		for _, r := range page.Results {
+			if seen[r.Snippet] {
+				t.Fatalf("duplicate result across pages: %q", r.Snippet)
+			}
+			seen[r.Snippet] = true
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	if len(seen) != total {
+		t.Fatalf("expected to see all %d results across pages, got %d", total, len(seen))
+	}
+}
+
+// RELEASE/v0.5.3: log content is not trusted HTML. A line containing
+// "<"/"&"/etc must come back HTML-escaped in both modes — the UI injects
+// Snippet via innerHTML, so unescaped log content would be a stored-XSS
+// vector (a log line like a raw request path containing
+// "<img src=x onerror=alert(1)>" rendered as real markup).
+func TestSearch_EscapesHTMLInSnippetBothModes(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now()
+	malicious := `xsstest <img src=x onerror=alert(1)> & "quoted"`
+
+	if err := store.InsertBatch([]LogLine{
+		{Pod: "web-1", Container: "app", Timestamp: now, Content: malicious},
+	}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	assertEscaped := func(t *testing.T, snippet string) {
+		t.Helper()
+		// "<img" unescaped would be a live tag; "&lt;img" is inert text —
+		// onerror=alert(1) appearing as plain (already-escaped) text
+		// alongside it is fine and expected, it's no longer inside real
+		// markup.
+		if strings.Contains(snippet, "<img") {
+			t.Fatalf("raw HTML leaked into the snippet unescaped: %q", snippet)
+		}
+		if !strings.Contains(snippet, "&lt;img") {
+			t.Fatalf("expected the literal \"<\" to be HTML-escaped, got %q", snippet)
+		}
+	}
+
+	t.Run("keyword search", func(t *testing.T) {
+		page, err := store.Search(SearchOptions{Query: "xsstest", Start: now, End: now, Limit: 500})
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if len(page.Results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(page.Results))
+		}
+		assertEscaped(t, page.Results[0].Snippet)
+		// The deliberate highlight must still render as real markup.
+		if !strings.Contains(page.Results[0].Snippet, "<mark>xsstest</mark>") {
+			t.Errorf("expected the matched term to still be highlighted, got %q", page.Results[0].Snippet)
+		}
+	})
+
+	t.Run("browse mode", func(t *testing.T) {
+		page, err := store.Search(SearchOptions{Start: now, End: now, Limit: 500})
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if len(page.Results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(page.Results))
+		}
+		assertEscaped(t, page.Results[0].Snippet)
+	})
 }
 
 // DESIGN/03: matches are ranked (bm25) and returned with a highlighted

@@ -23,7 +23,7 @@ Query params:
 
 | Param | Required | Default | Notes |
 | :--- | :--- | :--- | :--- |
-| `q` | yes | — | FTS5 match expression, sanitized per-term (see `sanitizeMatchQuery` in [DESIGN/03](03_design_storage.md)). `400` if missing. |
+| `q` | no | `""` (browse mode) | FTS5 match expression, sanitized per-term (see `sanitizeMatchQuery` in [DESIGN/03](03_design_storage.md)). Empty/whitespace-only means "browse," not "search for nothing" — see "Browse mode" below. |
 | `start` | no | `end` minus `DEFAULT_SEARCH_DAYS - 1` days (`YYYY-MM-DD`) | Inclusive. `400` if unparseable. |
 | `end` | no | today | Inclusive. `400` if before `start`. |
 | `level` | no | `""` (no filtering — the UI's "ALL" tab) | One of `FATAL`/`ERROR`/`WARN`/`INFO`/`DEBUG`/`TRACE`. Matches that level *and anything more severe* (`level=WARN` returns `WARN`, `ERROR`, and `FATAL`), not an exact match — see "Level filtering" below. Unrecognized values are treated the same as `""`. |
@@ -36,10 +36,36 @@ today: `DEFAULT_SEARCH_DAYS=7` means today plus the 6 days before it.
 Response is JSON: `{query, start, end, level, count, results, next_cursor}`,
 where each result is a `storage.SearchResult` (`pod`, `namespace`,
 `container`, `timestamp`, `level` — best-effort detected, may be `""`, see
-[DESIGN/02](02_design_tailer.md) — `snippet` pre-highlighted with `<mark>`
-tags by SQLite's `snippet()`, `rank`). Each page is capped at 500 results
-server-side regardless of what the caller asks for; `next_cursor` is `""`
-once there's nothing left to page through.
+[DESIGN/02](02_design_tailer.md) — `snippet`, `rank`). Each page is capped
+at 500 results server-side regardless of what the caller asks for;
+`next_cursor` is `""` once there's nothing left to page through.
+
+### Browse mode (v0.5.3)
+
+`q=""` (the default — omitting it entirely, or a value that's only
+whitespace) doesn't 400 and doesn't search for an empty string: it browses
+every line in `[start, end]` (still narrowable by `level`), most-recent
+first, no keyword needed just to see what's there. Internally this skips
+FTS5's `MATCH` entirely — `bm25()`/`snippet()` are only meaningful in the
+context of an active `MATCH`, so a browse-mode result's `snippet` is the
+raw line (HTML-escaped, see "Snippet escaping" below, but with no
+`<mark>` highlighting since nothing was searched for) and `rank` is
+always `0`. `q` still works as an optional filter on top of browse mode —
+type a keyword and it narrows the same view to a bm25-ranked match. See
+[DESIGN/03](03_design_storage.md#store-daily-sharded-sqlite--fts5) for
+the query construction and why browse mode's cursor sorts by recency
+(shard, then per-shard rowid, both descending) instead of by rank.
+
+### Snippet escaping (v0.5.3)
+
+`snippet` is always HTML-escaped server-side before any `<mark>`/`</mark>`
+highlighting is reintroduced (`storage.escapeSnippet`) — log content is
+not trusted input, and the UI injects `snippet` via `innerHTML` to render
+the highlighting, so returning it unescaped would let a log line
+containing real markup (e.g. a raw request path logged verbatim,
+containing `<img src=x onerror=...>`) execute as HTML in the browser. The
+only real markup ever present in a response's `snippet` is the
+highlighting grepod itself added.
 
 ### Level filtering
 
@@ -160,11 +186,17 @@ server side — there's still exactly one page shell.
 
 1. Defaults the date pickers to a 7-day window (6 days ago through today),
    matching the server's own default so the UI's initial state isn't
-   narrower than a bare `/api/search?q=` call.
+   narrower than a bare `/api/search?q=` call, and runs an initial search
+   with an empty `q` on page load — browse mode (v0.5.3): there's
+   something to look at immediately, not an empty "type a keyword" prompt.
+   The query box is an optional filter on top of that view, not a gate on
+   it.
 2. On search, calls `/api/search` with `q`/`start`/`end`/`level` and
    renders each result as one line: `[pod/container] timestamp snippet`,
    injecting the snippet's HTML directly since the `<mark>` tags are meant
-   to render.
+   to render — safe because the server always HTML-escapes `snippet`
+   before reintroducing the highlighting markup, see "Snippet escaping"
+   above.
 3. **Level tabs** (`ALL`/`INFO`/`WARN`/`DEBUG`/`FATAL`) re-run the same
    search with `level` set, resetting pagination. See "Level filtering"
    above for the "this level and anything more severe" semantics.
