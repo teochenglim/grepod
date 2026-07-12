@@ -16,8 +16,8 @@ cmd/server         entrypoint: wiring, config from env, HTTP server lifecycle
    │        │              + Broadcaster (live tail fan-out, since v0.4.0)
    │        ▲
    │        │
-   └── internal/api       HTTP handler: /api/search, /api/tail, /healthz,
-            │              /readyz + static file server
+   └── internal/api       HTTP handler: /api/search, /api/tail, /api/known,
+            │              /healthz, /readyz + static file server
             ▼
          web/            embedded search UI (web/templates + web/static)
 ```
@@ -64,15 +64,23 @@ only place `BatchQueue` and `Broadcaster` are composed together
    day's `logs_YYYY-MM-DD.db`, and inserts into its `fts` FTS5 table inside
    one transaction.
 7. A browser hits `GET /api/search?q=...`. `api.Handler.handleSearch` parses
-   `q`/`start`/`end` and calls `Store.Search`. (Or `GET /api/tail` —
-   `handleTail` subscribes to the `Broadcaster` directly and streams
-   matching lines as SSE, bypassing SQLite entirely; see
-   [DESIGN/04](DESIGN/04_design_api.md#apitail-v040).)
+   `q`/`start`/`end`/`level`/`cursor` and calls `Store.Search` — `q` is
+   optional: omitting it browses every line in range instead of requiring
+   a keyword (see [DESIGN/04](DESIGN/04_design_api/01_search.md#browse-mode-v052)).
+   (Or `GET /api/tail` — `handleTail` subscribes to the `Broadcaster`
+   directly and streams matching lines as SSE, bypassing SQLite entirely;
+   see [DESIGN/04](DESIGN/04_design_api/02_tail_and_known.md#apitail-v040). Or
+   `GET /api/known` for the distinct pod/container names feeding the tail
+   filter dropdowns.)
 8. `Search` attaches every shard file in `[start, end]` to a fresh in-memory
-   connection and runs one `UNION ALL … ORDER BY bm25() … LIMIT` query
-   across them.
-9. Results (with `<mark>`-highlighted snippets from SQLite's `snippet()`)
-   come back as JSON; `web/static/app.js`'s `render()` turns each into a
+   connection and runs one `UNION ALL` query across them — `ORDER BY
+   bm25() … LIMIT` for a keyword query, `ORDER BY` recency for browse mode
+   — with a keyset cursor for pagination past the 500-result cap instead
+   of `OFFSET`.
+9. Results (with `<mark>`-highlighted snippets from SQLite's `snippet()`,
+   HTML-escaped server-side before that highlighting is reintroduced —
+   see [DESIGN/04](DESIGN/04_design_api/01_search.md#snippet-escaping-v052)) come
+   back as JSON; `web/static/app.js`'s `render()` turns each into a
    `[pod/container] timestamp snippet` line.
 
 ## Adding a new HTTP endpoint

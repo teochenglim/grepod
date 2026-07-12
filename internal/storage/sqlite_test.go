@@ -94,7 +94,7 @@ func TestInsertBatch_MigratesShardWithPreLevelSchema(t *testing.T) {
 	}
 }
 
-// RELEASE/v0.5.3: an empty Query is browse mode — every line in range,
+// RELEASE/v0.5.2: an empty Query is browse mode — every line in range,
 // most-recent-first, no keyword required. Ordering is by insertion
 // (shard, then per-shard rowid, both descending), which for a single
 // shard inserted in chronological order matches recency.
@@ -125,7 +125,7 @@ func TestSearch_BrowseModeReturnsAllLinesMostRecentFirst(t *testing.T) {
 	}
 }
 
-// RELEASE/v0.5.3: browse mode still respects MinLevel.
+// RELEASE/v0.5.2: browse mode still respects MinLevel.
 func TestSearch_BrowseModeRespectsLevelFilter(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Now()
@@ -146,7 +146,7 @@ func TestSearch_BrowseModeRespectsLevelFilter(t *testing.T) {
 	}
 }
 
-// RELEASE/v0.5.3: browse mode's cursor pages through all results exactly
+// RELEASE/v0.5.2: browse mode's cursor pages through all results exactly
 // once each too, same guarantee as keyword search's cursor.
 func TestSearch_BrowseModeCursorPagesThroughAllResults(t *testing.T) {
 	store := newTestStore(t)
@@ -187,7 +187,7 @@ func TestSearch_BrowseModeCursorPagesThroughAllResults(t *testing.T) {
 	}
 }
 
-// RELEASE/v0.5.3: log content is not trusted HTML. A line containing
+// RELEASE/v0.5.2: log content is not trusted HTML. A line containing
 // "<"/"&"/etc must come back HTML-escaped in both modes — the UI injects
 // Snippet via innerHTML, so unescaped log content would be a stored-XSS
 // vector (a log line like a raw request path containing
@@ -315,6 +315,48 @@ func TestSearch_SkipsMissingShardsWithoutError(t *testing.T) {
 	}
 	if len(page.Results) != 0 {
 		t.Fatalf("expected no results, got %d", len(page.Results))
+	}
+}
+
+// RELEASE/v0.6.0: SQLite's ATTACH limit (10 databases per connection,
+// confirmed against modernc.org/sqlite) means a date range needing more
+// than maxAttachedShards shards can't attach them all. Search must keep
+// the most recent shards, not whichever it happened to attach first —
+// an oldest-to-newest attach order (the naive approach) would silently
+// keep the *oldest* data and drop the most recent, which is backwards
+// from what any caller searching a wide range actually wants. Found via
+// this release's perf-pass benchmarks (BenchmarkSearch_AcrossShards),
+// not through manual testing.
+func TestSearch_CapsToMostRecentShardsWhenRangeExceedsAttachLimit(t *testing.T) {
+	store := newTestStore(t)
+	today := time.Now()
+
+	const totalDays = maxAttachedShards + 5
+	for i := 0; i < totalDays; i++ {
+		day := today.AddDate(0, 0, -(totalDays - 1 - i)) // i=0 is oldest
+		if err := store.InsertBatch([]LogLine{
+			{Pod: "web-1", Container: "app", Timestamp: day, Content: fmt.Sprintf("attachtest-day-%02d", i)},
+		}); err != nil {
+			t.Fatalf("InsertBatch (day %d): %v", i, err)
+		}
+	}
+
+	page, err := store.Search(SearchOptions{
+		Query: "attachtest", Start: today.AddDate(0, 0, -(totalDays - 1)), End: today, Limit: 500,
+	})
+	if err != nil {
+		t.Fatalf("Search over a %d-day range should not error even though it exceeds the attach limit: %v", totalDays, err)
+	}
+	if len(page.Results) != maxAttachedShards {
+		t.Fatalf("expected exactly %d results (capped to the most recent shards), got %d", maxAttachedShards, len(page.Results))
+	}
+	for _, r := range page.Results {
+		for i := 0; i < totalDays-maxAttachedShards; i++ {
+			want := fmt.Sprintf("attachtest-day-%02d", i)
+			if strings.Contains(r.Snippet, want) {
+				t.Errorf("expected the oldest %d days to be dropped, but found %q in results", totalDays-maxAttachedShards, want)
+			}
+		}
 	}
 }
 

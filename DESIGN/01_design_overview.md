@@ -40,6 +40,14 @@ One process, one namespace, one data directory. `cmd/server/main.go` wires
 all four pieces together and owns the HTTP server lifecycle and graceful
 shutdown.
 
+A second, independent path exists alongside the one diagrammed above:
+`GET /api/tail` (since v0.4.0) subscribes directly to a `Broadcaster` that
+`cmd/server`'s `fanoutSink` publishes every line to *before* it's batched
+into `Store` — live tail never touches SQLite, so a slow or disconnected
+tail client can't affect ingestion or search. See
+[Storage](03_design_storage.md#broadcaster-live-tail-fan-out) and
+[API](04_design_api/02_tail_and_known.md#apitail-v040).
+
 ## Key decisions
 
 - **client-go informer, not `kubectl logs` subprocesses.** A `SharedInformerFactory`

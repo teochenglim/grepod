@@ -41,7 +41,7 @@ at the top, not coupled to each other. This matters because the two have
 different latency requirements: `BatchQueue` batches for SQLite
 throughput (`BATCH_INTERVAL`, currently 500ms — see
 [v0.8.0](../RELEASE/v0.8.0.md) for the planned move to 15s), while
-`/api/tail` (see [DESIGN/04](04_design_api.md#apitail-v040)) needs lines
+`/api/tail` (see [DESIGN/04](04_design_api/02_tail_and_known.md#apitail-v040)) needs lines
 the instant they arrive, not after a flush.
 
 `Broadcaster.Subscribe()` gives each subscriber (one per `/api/tail`
@@ -111,15 +111,24 @@ transaction per affected shard for throughput.
 
 ## Search: cross-shard ATTACH
 
-`Store.Search(query, start, end, limit)`:
+`Store.Search(opts SearchOptions)`:
 
-1. Lists which shard files exist for `[start, end]` (`os.Stat` — a missing
-   day is skipped, not an error).
+1. Lists which shard files exist for `[opts.Start, opts.End]` (`os.Stat` —
+   a missing day is skipped, not an error).
 2. Opens a fresh in-memory SQLite connection scoped to this one query, and
    `ATTACH DATABASE`s every matching shard onto it.
-3. Runs a single `UNION ALL` query across all attached shards' `fts` tables,
-   ranked by FTS5's `bm25()`, with `snippet()` producing the `<mark>`-wrapped
-   highlight the UI renders directly.
+3. Runs a single `UNION ALL` query across all attached shards' `fts`
+   tables, wrapped in an outer query that applies the keyset pagination
+   cursor and `LIMIT` (see [DESIGN/04](04_design_api/01_search.md#pagination)). With
+   `opts.Query` set, each shard's `SELECT` uses FTS5 `MATCH`, ranked by
+   `bm25()`, with `snippet()` producing the highlight — see
+   [DESIGN/04](04_design_api/01_search.md#browse-mode-v052) for the `opts.Query ==
+   ""` browse-mode alternative, which skips `MATCH`/`bm25()`/`snippet()`
+   entirely and orders by recency instead. Either way, every row's
+   `snippet`/line content is HTML-escaped before `<mark>` highlighting is
+   reintroduced — see
+   [DESIGN/04](04_design_api/01_search.md#snippet-escaping-v052) — since log content
+   is not trusted input and the UI renders it via `innerHTML`.
 
 Attaching per-query (rather than keeping every shard attached to one
 long-lived connection) keeps shard lifecycle simple: a shard file being

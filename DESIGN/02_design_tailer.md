@@ -10,7 +10,7 @@ namespace (`informers.WithNamespace(namespace)`). Add/Update events call
 `reconcilePod`; Delete events call `stopPod`. Once the informer's initial
 cache sync completes, `Manager.Ready()` flips to `true` — the signal
 `internal/api`'s `/readyz` reports (see
-[DESIGN/04](04_design_api.md#healthz--readyz)).
+[DESIGN/04](04_design_api/03_health_and_ui.md#healthz--readyz)).
 
 ## Reconciliation
 
@@ -69,7 +69,7 @@ levels embedded in structured formats it doesn't specifically look for
 (e.g. a bare JSON `{"lvl":"w",...}`) and false-positive on the word
 appearing in a message that isn't actually indicating severity. Good
 enough for "mostly right, never silently wrong" — see
-[DESIGN/04](04_design_api.md) for how it's surfaced, and
+[DESIGN/04](04_design_api/01_search.md#level-filtering) for how it's surfaced, and
 [v0.5.0](../RELEASE/v0.5.0.md) for the UI built on top of it.
 
 ## Never tailing itself (v0.5.1)

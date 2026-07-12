@@ -90,6 +90,40 @@ func (s *Store) dbPath(date string) string {
 	return filepath.Join(s.dataDir, fmt.Sprintf("logs_%s.db", date))
 }
 
+// maxAttachedShards caps how many shard files a single query ATTACHes.
+// SQLite's default SQLITE_MAX_ATTACHED compile-time limit is 10
+// (confirmed empirically against modernc.org/sqlite while benchmarking
+// Search for DESIGN/05: attaching an 11th database fails outright with
+// "too many attached databases - max 10"), and there's no portable way
+// to raise it from a pure-Go build. Found via v0.6.0's perf-pass
+// benchmarks, not through manual testing — see RELEASE/v0.6.0.md.
+const maxAttachedShards = 10
+
+// existingShardDates lists, oldest first, every date in [start, end]
+// that has a shard file on disk (a missing day is skipped, not an
+// error — same as before), then caps the result to the most recent
+// maxAttachedShards dates if the range would otherwise need more shards
+// attached than a single SQLite connection allows. capped reports
+// whether any dates were dropped, so a caller can warn once instead of
+// once per excess shard (which is what iterating oldest-first and
+// letting each ATTACH past the limit fail used to do — worse still,
+// that silently kept the *oldest* shards and dropped the most recent
+// ones, since attachment stopped succeeding partway through an
+// oldest-to-newest loop).
+func (s *Store) existingShardDates(start, end time.Time) (dates []string, capped bool) {
+	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
+		date := d.Format(dateLayout)
+		if _, err := os.Stat(s.dbPath(date)); err == nil {
+			dates = append(dates, date)
+		}
+	}
+	if len(dates) > maxAttachedShards {
+		dropped := len(dates) - maxAttachedShards
+		return dates[dropped:], true // keep the most recent maxAttachedShards
+	}
+	return dates, false
+}
+
 // Breaking, pre-1.0: this schema gained the `level` column in v0.3.0.
 // Existing shard files predating that change won't have it —
 // getOrOpenDB's migrateLegacySchema rebuilds the table on next write (see
@@ -335,12 +369,11 @@ func (s *Store) Search(opts SearchOptions) (SearchPage, error) {
 	browseMode := opts.Query == ""
 	query := sanitizeMatchQuery(opts.Query)
 
-	var dates []string
-	for d := opts.Start; !d.After(opts.End); d = d.AddDate(0, 0, 1) {
-		date := d.Format(dateLayout)
-		if _, err := os.Stat(s.dbPath(date)); err == nil {
-			dates = append(dates, date)
-		}
+	dates, capped := s.existingShardDates(opts.Start, opts.End)
+	if capped {
+		slog.Warn("search date range exceeds the per-query shard attach limit, searching only the most recent shards",
+			"start", opts.Start.Format(dateLayout), "end", opts.End.Format(dateLayout),
+			"max_attached_shards", maxAttachedShards, "searched_from", dates[0])
 	}
 	if len(dates) == 0 {
 		return SearchPage{Results: []SearchResult{}}, nil
@@ -488,12 +521,10 @@ type KnownFilters struct {
 // Missing shards are skipped silently, same as Search.
 func (s *Store) KnownPods(since time.Time) (KnownFilters, error) {
 	today := time.Now()
-	var dates []string
-	for d := since; !d.After(today); d = d.AddDate(0, 0, 1) {
-		date := d.Format(dateLayout)
-		if _, err := os.Stat(s.dbPath(date)); err == nil {
-			dates = append(dates, date)
-		}
+	dates, capped := s.existingShardDates(since, today)
+	if capped {
+		slog.Warn("known-pods date range exceeds the per-query shard attach limit, scanning only the most recent shards",
+			"since", since.Format(dateLayout), "max_attached_shards", maxAttachedShards, "scanned_from", dates[0])
 	}
 	if len(dates) == 0 {
 		return KnownFilters{Pods: []string{}, Containers: []string{}}, nil

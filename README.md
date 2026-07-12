@@ -29,7 +29,7 @@ docker run --rm -p 8080:8080 \
   -e NAMESPACE=default \
   -v ~/.kube:/kube:ro -e KUBECONFIG=/kube/config \
   -v grepod-data:/data \
-  grepod:latest
+  grepod:local
 ```
 
 (In-cluster deployments use the pod's ServiceAccount instead of a mounted
@@ -74,12 +74,22 @@ for the full story, including why grepod is one `Deployment` per namespace
 ## Features
 
 - **One namespace, every pod.** A `client-go` informer discovers pods and
-  tails every container, including init containers if enabled.
+  tails every container, including init containers if enabled — except
+  grepod's own pod, which is never tailed (avoids a feedback loop with its
+  own operational logs).
 - **Crash-safe.** Fetches a crashed container's previous logs before
   resuming the live stream, so a panic's last lines are never lost.
-- **Full-text search**, not just `grep` — SQLite FTS5 with `bm25()`
-  ranking and highlighted snippets, across a date range (defaults to the
-  past 7 days, configurable).
+- **Browse or search** — the UI shows every line in range by default, most
+  recent first, no keyword required; typing one narrows that same view to
+  a SQLite FTS5 `bm25()`-ranked, highlighted match. Either way, results
+  page past the first 500 via cursor-based pagination ("Load more"), and
+  can be scoped to a log level and anything more severe (`WARN` also
+  surfaces `ERROR`/`FATAL`) via the level tabs.
+- **Live tail.** A second UI mode streams newly-ingested lines as they
+  arrive (Server-Sent Events), filterable by pod/container (picked from a
+  dropdown of what's actually present, not typed blind) and a substring —
+  independent of the SQLite-backed search/browse path, so a slow or
+  disconnected tail client never affects ingestion.
 - **Best-effort log level detection.** Each ingested line is scanned for
   a recognizable level token (`FATAL`/`ERROR`/`WARN`/`INFO`/`DEBUG`/
   `TRACE`) and stored alongside it — empty when nothing matches, never
@@ -110,12 +120,17 @@ See [DESIGN.md](DESIGN.md) for how it's built and
 ## Releasing
 
 ```sh
+git add -A && git commit -m "..." && git push origin main   # your work first
 make release VERSION=x.y.z
 ```
 
-Bumps `VERSION`, commits, tags `vx.y.z`, and pushes — which triggers the
-tag-driven release pipeline: tests → cross-platform binaries (attached to
-a GitHub Release) → a `ghcr.io` image. See [RELEASE.md](RELEASE.md) for
-what's shipped in each version.
+`make release` bumps `VERSION` and the `helm`/`k8s` manifests' image tags
+(rewritten, uncommitted — commit them yourself whenever convenient), pushes
+`HEAD`, tags `vx.y.z`, and pushes the tag — it never creates a commit
+itself, so the tag always lands on your own commit message, not a generic
+bump. Pushing the tag triggers the tag-driven release pipeline: tests →
+cross-platform binaries (attached to a GitHub Release) → a `ghcr.io`
+image. See [RELEASE.md](RELEASE.md) for what's shipped in each version
+and the full mechanics.
 
 Run `make` with no arguments for the full list of available targets.

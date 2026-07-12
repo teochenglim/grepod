@@ -10,8 +10,9 @@ never `DaemonSet`, never more than one replica. Module:
 
 1. [ARCHITECTURE.md](ARCHITECTURE.md) — layering, where-things-go table,
    data-flow walkthrough, "adding a new X" checklists.
-2. [DESIGN.md](DESIGN.md) → `DESIGN/01`–`04` — why each subsystem works
-   the way it does, including non-goals and the no-replicas constraint.
+2. [DESIGN.md](DESIGN.md) → `DESIGN/01`–`05` — why each subsystem works
+   the way it does, including non-goals, the no-replicas constraint, and
+   benchmark methodology/results.
 3. [RELEASE.md](RELEASE.md) → `RELEASE/vX.Y.Z.md` — what shipped, what's
    planned, and every bug a version's own work surfaced. This is where
    version-specific history and rationale live — not here.
@@ -24,7 +25,7 @@ never `DaemonSet`, never more than one replica. Module:
 | :--- | :--- |
 | Pod discovery / log streaming | `internal/tailer/manager.go` |
 | Write batching, SQLite/FTS5, retention | `internal/storage/` |
-| HTTP API (`/api/search`) | `internal/api/handler.go` |
+| HTTP API (`/api/search`, `/api/tail`, `/api/known`) | `internal/api/handler.go` |
 | Search UI | `web/templates/index.html` + `web/static/{style.css,app.js,favicon.svg}` |
 | Config (env vars) | `cmd/server/main.go` (`env*` helpers) |
 | CI/CD | `.github/workflows/*.yml` (tag-driven; SHA-pinned actions) |

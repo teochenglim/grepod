@@ -54,17 +54,23 @@ kubectl apply -k k8s/
 ```
 
 `image:` in `20-deployment.yaml` is pinned to a specific version tag (e.g.
-`ghcr.io/teochenglim/grepod:0.5.1` — no `v` prefix, unlike the git tag
+`ghcr.io/teochenglim/grepod:0.5.2` — no `v` prefix, unlike the git tag
 it's built from; `docker/metadata-action`'s `type=semver,pattern={{version}}`
 strips it), not `:latest` — deliberately, so `kubectl apply`/`helm
 upgrade` are reproducible and a redeploy doesn't silently pick up a newer
 image than the one actually tested. `make bump VERSION=x.y.z`/`make
 release VERSION=x.y.z` regex-replace the tag here (and
-`helm/Chart.yaml`'s `appVersion`) to match — see the Makefile. Not
-templated otherwise, so a fork or local build
-(`make docker-build`) still means editing the tag directly rather than a
-Kustomize/values override. `make k8s-apply`/`make k8s-delete` run the
-same `-k` commands.
+`helm/Chart.yaml`'s `appVersion`) to match — see the Makefile; the same
+`make bump` also builds a local image under that exact tag, so `make bump
+VERSION=x.y.z && make k8s-apply` picks it up via `imagePullPolicy:
+IfNotPresent` with no registry push, for a cluster sharing the host's
+Docker daemon (Docker Desktop's Kubernetes, colima). Not templated
+otherwise, so a fork or registry build still means editing the tag
+directly rather than a Kustomize/values override. `make k8s-apply`/
+`make k8s-delete` run the same `-k` commands; `make k8s-nodeport`
+patches the applied Service to `NodePort 30080` for quick local access
+(`http://localhost:30080/`) without a `port-forward` — `make k8s-apply`
+reverts it back to `ClusterIP`.
 
 **GHCR packages published by GitHub Actions default to private.** If
 `ghcr.io/teochenglim/grepod` (or your fork's equivalent) isn't public,

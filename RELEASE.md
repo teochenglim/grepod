@@ -8,8 +8,8 @@ One row per version, newest first. Each links to its detail file in
 | [v1.0.0](RELEASE/v1.0.0.md) | Stabilize & commit to compatibility | Not started | |
 | [v0.8.0](RELEASE/v0.8.0.md) | Read/write timeouts + SQLite write consolidation | Not started | |
 | [v0.7.0](RELEASE/v0.7.0.md) | Restart-safe tailing + RED metrics | Not started | `/metrics` moved here from v0.3.0. |
-| [v0.6.0](RELEASE/v0.6.0.md) | Hardening, perf pass, docs catch-up | Not started | |
-| [v0.5.2](RELEASE/v0.5.2.md) | Fix permanent ingestion failure; browse logs without a keyword; fix unescaped log content in the UI | Ready to tag | Implemented, verified locally, uncommitted. |
+| [v0.6.0](RELEASE/v0.6.0.md) | Hardening, perf pass, docs catch-up | Shipped | Tagged. |
+| [v0.5.2](RELEASE/v0.5.2.md) | Fix permanent ingestion failure; browse logs without a keyword; fix unescaped log content in the UI | Shipped | Tagged. |
 | [v0.5.1](RELEASE/v0.5.1.md) | Fix self-tail feedback loop; pin image tags; release tooling fix | Shipped | Tagged. |
 | [v0.5.0](RELEASE/v0.5.0.md) | Live tail UI + search UX + level filtering | Shipped | Tagged. Tail mode, level tabs, cursor pagination, pod/container filters, group-occurrences — see its file. |
 | [v0.4.2](RELEASE/v0.4.2.md) | Release tooling fix: push HEAD before tagging | Shipped | Tagged. |

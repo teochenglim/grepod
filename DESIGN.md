@@ -14,7 +14,12 @@ numbered in reading order:
 3. [Storage](DESIGN/03_design_storage.md) — the batch queue and daily-sharded
    SQLite FTS5 store.
 4. [API & UI](DESIGN/04_design_api.md) — the HTTP surface and embedded search
-   frontend.
+   frontend. Split further into `DESIGN/04_design_api/` (search, tail &
+   known, health & UI) once the single file grew past a comfortable size
+   (v0.6.0) — start at the linked overview, which indexes the rest.
+5. [Performance](DESIGN/05_design_performance.md) — benchmark methodology
+   and results (`internal/storage/bench_test.go`), including the
+   `ATTACH`-limit bug they surfaced.
 
 See also: [README.md](README.md) for usage, [ARCHITECTURE.md](ARCHITECTURE.md)
 for the code layout, [RELEASE.md](RELEASE.md) for what shipped when, and

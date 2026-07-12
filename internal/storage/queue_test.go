@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func newTestStore(t *testing.T) *Store {
+func newTestStore(t testing.TB) *Store {
 	t.Helper()
 	store, err := NewStore(t.TempDir())
 	if err != nil {
