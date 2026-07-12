@@ -34,6 +34,16 @@ service:
   port: 80
   targetPort: 8080
 
+# Off by default: only meaningful if the Prometheus Operator's CRDs are
+# installed in this cluster. Clusters scraping via the classic
+# prometheus.io/* pod annotations (always on — see
+# templates/deployment.yaml) don't need this at all. See
+# helm/README.md#metrics.
+serviceMonitor:
+  enabled: false
+  interval: "30s"
+  labels: {}
+
 # Optional. grepod has no built-in auth — see helm/README.md before
 # enabling this on anything reachable outside the cluster.
 ingress:

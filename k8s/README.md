@@ -89,6 +89,18 @@ template, not meant to be applied as-is) and `31-ingress.yaml`/
 `32-hpa.yaml` (both opt-in — see "Exposing it safely" below and the
 replica note above).
 
+## Metrics
+
+`/metrics` (Prometheus text format, v0.7.0 — see
+[DESIGN/04](../DESIGN/04_design_api.md)) is served on the same port as
+everything else (grepod is one HTTP server, no sidecars). `20-deployment.yaml`
+sets `prometheus.io/scrape` / `prometheus.io/port` / `prometheus.io/path` pod
+annotations, which the classic annotation-based Prometheus scrape config
+picks up with no further changes needed. Running the Prometheus Operator
+instead? See the [Helm chart](../helm/README.md#metrics)'s
+`serviceMonitor.enabled` value — plain manifests have no CRD-gated
+equivalent here, so add a `ServiceMonitor` yourself if you need one.
+
 ## Exposing it safely
 
 grepod has no built-in authentication — the search UI and `/api/search`

@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/teochenglim/grepod/internal/metrics"
 )
 
 // dropWarnInterval bounds how often Enqueue logs a "queue full" warning,
@@ -38,14 +40,17 @@ type BatchQueue struct {
 	in       chan LogLine
 	done     chan struct{}
 	stopped  chan struct{}
+	metrics  *metrics.Metrics // nil in tests that build a BatchQueue via struct literal — every use must nil-check
 
 	dropped      atomic.Int64 // lines dropped since the last warning
 	lastWarnedAt atomic.Int64 // UnixNano of the last "queue full" warning, 0 if never
 }
 
 // NewBatchQueue creates a queue that flushes to store every `interval`
-// or once `size` lines have accumulated, whichever happens first.
-func NewBatchQueue(store *Store, size int, interval time.Duration) *BatchQueue {
+// or once `size` lines have accumulated, whichever happens first. m
+// records RED metrics for the flush path (see internal/metrics); a nil m
+// disables that recording.
+func NewBatchQueue(store *Store, size int, interval time.Duration, m *metrics.Metrics) *BatchQueue {
 	if size <= 0 {
 		size = 200
 	}
@@ -60,6 +65,7 @@ func NewBatchQueue(store *Store, size int, interval time.Duration) *BatchQueue {
 		in:       make(chan LogLine, size*4),
 		done:     make(chan struct{}),
 		stopped:  make(chan struct{}),
+		metrics:  m,
 	}
 	go q.run()
 	return q
@@ -82,6 +88,9 @@ func (q *BatchQueue) Enqueue(l LogLine) {
 // Enqueue's own never-block guarantee.
 func (q *BatchQueue) recordDrop(l LogLine) {
 	q.dropped.Add(1)
+	if q.metrics != nil {
+		q.metrics.LinesDroppedTotal.Inc()
+	}
 
 	now := time.Now().UnixNano()
 	last := q.lastWarnedAt.Load()
@@ -149,7 +158,16 @@ func (q *BatchQueue) flush() {
 	q.buf = make([]LogLine, 0, q.size)
 	q.mu.Unlock()
 
-	if err := q.store.InsertBatch(batch); err != nil {
+	start := time.Now()
+	err := q.store.InsertBatch(batch)
+	if q.metrics != nil {
+		q.metrics.InsertRequestsTotal.Inc()
+		q.metrics.InsertDuration.Observe(time.Since(start).Seconds())
+		if err != nil {
+			q.metrics.InsertErrorsTotal.Inc()
+		}
+	}
+	if err != nil {
 		slog.Error("failed to flush log lines", "count", len(batch), "err", err)
 	}
 }

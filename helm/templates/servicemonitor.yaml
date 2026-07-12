@@ -1,0 +1,26 @@
+{{- if .Values.serviceMonitor.enabled -}}
+# Off by default (values.yaml: serviceMonitor.enabled: false) — only
+# meaningful if the Prometheus Operator's CRDs are installed in this
+# cluster; enabling it without that CRD present makes `helm install` fail
+# validation. Clusters using the classic annotation-based scrape config
+# don't need this at all — see deployment.yaml's prometheus.io/* pod
+# annotations, which are always on.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "grepod.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "grepod.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "grepod.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval | default "30s" }}
+{{- end }}

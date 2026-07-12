@@ -16,10 +16,12 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 
+	"github.com/teochenglim/grepod/internal/metrics"
 	"github.com/teochenglim/grepod/internal/storage"
 )
 
@@ -35,10 +37,29 @@ type Sink interface {
 	Enqueue(l storage.LogLine)
 }
 
+// MarkerStore resolves the last timestamp already indexed for a
+// pod/container. storage.Store satisfies this via its LastSeen method —
+// used to seed a fresh Manager's in-memory marker for a container it
+// hasn't tailed yet this process lifetime, so a grepod restart doesn't
+// re-ingest an already-running container's entire buffered log. See
+// resolveMarker and DESIGN/02.
+type MarkerStore interface {
+	LastSeen(pod, container string) (time.Time, bool, error)
+}
+
 // containerKey uniquely identifies one tailed container within one pod.
 type containerKey struct {
 	pod       string
 	container string
+}
+
+// marker tracks the last-ingested-timestamp state for one container.
+// resolved distinguishes "never looked up" (zero value) from "looked up
+// and found nothing" (ts is zero but resolved is true) so resolveMarker
+// only ever queries MarkerStore once per container per process lifetime.
+type marker struct {
+	ts       time.Time
+	resolved bool
 }
 
 // Manager owns the Pod informer and the lifecycle of every per-container
@@ -49,10 +70,15 @@ type Manager struct {
 	sink        Sink
 	includeInit bool
 	selfPod     string // never tailed — see reconcilePod
+	markerStore MarkerStore
+	metrics     *metrics.Metrics
 
 	mu            sync.Mutex
 	cancels       map[containerKey]context.CancelFunc
 	restartCounts map[containerKey]int32
+
+	markersMu sync.Mutex
+	markers   map[containerKey]marker
 
 	wg    sync.WaitGroup // tracks every spawned tailContainer goroutine, so Run can wait for a full drain on shutdown
 	ready atomic.Bool
@@ -64,16 +90,22 @@ type Manager struct {
 // POD_NAME) is never tailed, regardless of includeInit — see
 // reconcilePod's doc comment for why. An empty selfPod (e.g. running
 // outside Kubernetes with POD_NAME unset) disables the exclusion rather
-// than matching every pod named "".
-func NewManager(clientset kubernetes.Interface, namespace string, sink Sink, includeInit bool, selfPod string) *Manager {
+// than matching every pod named "". markerStore seeds restart-safe
+// tailing (see MarkerStore); a nil markerStore just disables that lookup,
+// falling through to the pre-v0.7.0 behavior. m records RED metrics for
+// every stream (re)connect — see internal/metrics.
+func NewManager(clientset kubernetes.Interface, namespace string, sink Sink, includeInit bool, selfPod string, markerStore MarkerStore, m *metrics.Metrics) *Manager {
 	return &Manager{
 		clientset:     clientset,
 		namespace:     namespace,
 		sink:          sink,
 		includeInit:   includeInit,
 		selfPod:       selfPod,
+		markerStore:   markerStore,
+		metrics:       m,
 		cancels:       make(map[containerKey]context.CancelFunc),
 		restartCounts: make(map[containerKey]int32),
+		markers:       make(map[containerKey]marker),
 	}
 }
 
@@ -220,7 +252,77 @@ func (m *Manager) stopPod(podName string) {
 
 	for _, key := range toCancel {
 		m.stopContainer(key)
+		// Only on an actual pod deletion, not a restart-count-triggered
+		// stopContainer: reconcilePod's restart path deliberately keeps
+		// the marker so the fresh goroutine it starts right after still
+		// benefits from it (see resolveMarker).
+		m.deleteMarker(key)
 	}
+}
+
+// resolveMarker ensures key has a marker entry, querying markerStore at
+// most once per container per process lifetime — cheap enough to matter:
+// a namespace with many pods would otherwise pay a query per container on
+// every reconnect, not just the first. A concurrent resolveMarker/
+// setMarker race (vanishingly unlikely — resolveMarker runs once per
+// goroutine, right before that goroutine's first streamLogs call) is
+// resolved in setMarker's favor: an in-flight ingest already has more
+// current information than a store lookup started before it.
+func (m *Manager) resolveMarker(key containerKey) {
+	m.markersMu.Lock()
+	_, known := m.markers[key]
+	m.markersMu.Unlock()
+	if known {
+		return
+	}
+
+	var mk marker
+	if m.markerStore != nil {
+		if ts, ok, err := m.markerStore.LastSeen(key.pod, key.container); err != nil {
+			slog.Warn("failed to resolve last-seen marker, falling back to full-buffer replay",
+				"pod", key.pod, "container", key.container, "err", err)
+		} else if ok {
+			mk.ts = ts
+		}
+	}
+	mk.resolved = true
+
+	m.markersMu.Lock()
+	if _, known := m.markers[key]; !known {
+		m.markers[key] = mk
+	}
+	m.markersMu.Unlock()
+}
+
+// markerSince returns the SinceTime to use for key's next streamLogs
+// call — the zero time if there's no marker yet, which callers must
+// treat as "no SinceTime" (K8s API semantics: SinceTime is optional).
+func (m *Manager) markerSince(key containerKey) time.Time {
+	m.markersMu.Lock()
+	defer m.markersMu.Unlock()
+	return m.markers[key].ts
+}
+
+// setMarker advances key's marker to ts if ts is newer than what's
+// already recorded. Called only from ingest's streamLogs path (not
+// fetchPreviousLogs — see ingest's trackMarker parameter), so the marker
+// only ever reflects lines actually read from the container's live
+// stream.
+func (m *Manager) setMarker(key containerKey, ts time.Time) {
+	m.markersMu.Lock()
+	cur := m.markers[key]
+	if ts.After(cur.ts) {
+		cur.ts = ts
+	}
+	cur.resolved = true
+	m.markers[key] = cur
+	m.markersMu.Unlock()
+}
+
+func (m *Manager) deleteMarker(key containerKey) {
+	m.markersMu.Lock()
+	delete(m.markers, key)
+	m.markersMu.Unlock()
 }
 
 // tailContainer fetches the previous (crashed) container's tail first,
@@ -230,17 +332,26 @@ func (m *Manager) tailContainer(ctx context.Context, podName, containerName stri
 	defer m.wg.Done()
 	m.fetchPreviousLogs(ctx, podName, containerName)
 
+	key := containerKey{pod: podName, container: containerName}
+	m.resolveMarker(key)
+
 	backoff := initialBackoff
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 
-		err := m.streamLogs(ctx, podName, containerName)
+		if m.metrics != nil {
+			m.metrics.TailStreamsTotal.Inc()
+		}
+		err := m.streamLogs(ctx, podName, containerName, m.markerSince(key))
 		if ctx.Err() != nil {
 			return
 		}
 		if err != nil {
+			if m.metrics != nil {
+				m.metrics.TailStreamErrorsTotal.Inc()
+			}
 			slog.Warn("tailer stream dropped, retrying",
 				"pod", podName, "container", containerName, "err", err, "backoff", backoff)
 		}
@@ -279,14 +390,33 @@ func (m *Manager) fetchPreviousLogs(ctx context.Context, podName, containerName 
 	}
 	defer stream.Close()
 
-	m.ingest(podName, containerName, stream)
+	// false: previous-instance logs must never advance the marker used
+	// for the *current* instance's SinceTime — see ingest's doc comment.
+	m.ingest(podName, containerName, stream, false)
 }
 
-func (m *Manager) streamLogs(ctx context.Context, podName, containerName string) error {
-	req := m.clientset.CoreV1().Pods(m.namespace).GetLogs(podName, &corev1.PodLogOptions{
+// streamLogs follows podName/containerName's live log. If since is
+// non-zero, it's passed as PodLogOptions.SinceTime so a reconnect to a
+// container this process has already read from doesn't replay the
+// entire currently-buffered log again (the default behavior of
+// Follow:true with no SinceTime — see RELEASE/v0.7.0.md and DESIGN/02).
+// since is an approximation: it's grepod's own ingestion-time stamp
+// (DESIGN/02 already establishes that as the authoritative timestamp,
+// since raw log output carries none without --timestamps), not the
+// container runtime's own per-line timestamp that SinceTime actually
+// filters on server-side. In practice ingestion follows emission closely
+// enough for this to only matter at the boundary line, which the K8s API
+// includes inclusively.
+func (m *Manager) streamLogs(ctx context.Context, podName, containerName string, since time.Time) error {
+	opts := &corev1.PodLogOptions{
 		Container: containerName,
 		Follow:    true,
-	})
+	}
+	if !since.IsZero() {
+		st := metav1.NewTime(since)
+		opts.SinceTime = &st
+	}
+	req := m.clientset.CoreV1().Pods(m.namespace).GetLogs(podName, opts)
 
 	stream, err := req.Stream(ctx)
 	if err != nil {
@@ -294,25 +424,34 @@ func (m *Manager) streamLogs(ctx context.Context, podName, containerName string)
 	}
 	defer stream.Close()
 
-	m.ingest(podName, containerName, stream)
+	m.ingest(podName, containerName, stream, true)
 	return nil
 }
 
 // ingest reads newline-delimited log lines from r and enqueues each one.
 // Kubernetes does not attach a timestamp to raw log lines here, so we
-// stamp them with time.Now() at ingestion time.
-func (m *Manager) ingest(podName, containerName string, r io.ReadCloser) {
+// stamp them with time.Now() at ingestion time. trackMarker advances
+// this container's marker (see setMarker) as each line is read — true
+// for streamLogs' live-tail reads, false for fetchPreviousLogs' one-shot
+// read of a *different* (crashed) container instance's tail, which must
+// never influence the current instance's SinceTime.
+func (m *Manager) ingest(podName, containerName string, r io.ReadCloser, trackMarker bool) {
+	key := containerKey{pod: podName, container: containerName}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
 		line := sc.Text()
+		ts := time.Now()
 		m.sink.Enqueue(storage.LogLine{
 			Pod:       podName,
 			Namespace: m.namespace,
 			Container: containerName,
-			Timestamp: time.Now(),
+			Timestamp: ts,
 			Level:     detectLevel(line),
 			Content:   line,
 		})
+		if trackMarker {
+			m.setMarker(key, ts)
+		}
 	}
 }

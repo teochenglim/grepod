@@ -46,7 +46,7 @@ func pollUntilCount(t *testing.T, store *Store, query string, want int, timeout 
 // waiting for the flush interval.
 func TestBatchQueue_FlushesOnSize(t *testing.T) {
 	store := newTestStore(t)
-	q := NewBatchQueue(store, 3, time.Hour) // interval long enough that only size can trigger this
+	q := NewBatchQueue(store, 3, time.Hour, nil) // interval long enough that only size can trigger this
 	t.Cleanup(q.Close)
 
 	for i := 0; i < 3; i++ {
@@ -60,7 +60,7 @@ func TestBatchQueue_FlushesOnSize(t *testing.T) {
 // ticks, without needing to reach the size threshold.
 func TestBatchQueue_FlushesOnInterval(t *testing.T) {
 	store := newTestStore(t)
-	q := NewBatchQueue(store, 1000, 30*time.Millisecond) // size unreachable; only the interval can trigger this
+	q := NewBatchQueue(store, 1000, 30*time.Millisecond, nil) // size unreachable; only the interval can trigger this
 	t.Cleanup(q.Close)
 
 	q.Enqueue(LogLine{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: time.Now(), Content: "flush-on-interval-marker"})
@@ -122,7 +122,7 @@ func TestBatchQueue_WarnsAgainAfterRateLimitWindow(t *testing.T) {
 // discarding it, and blocks until that flush has actually happened.
 func TestBatchQueue_CloseFlushesRemaining(t *testing.T) {
 	store := newTestStore(t)
-	q := NewBatchQueue(store, 1000, time.Hour) // neither threshold would fire on its own
+	q := NewBatchQueue(store, 1000, time.Hour, nil) // neither threshold would fire on its own
 
 	q.Enqueue(LogLine{Pod: "web-1", Namespace: "default", Container: "app", Timestamp: time.Now(), Content: "close-flush-marker"})
 	q.Close()

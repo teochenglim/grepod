@@ -98,7 +98,12 @@ for the full story, including why grepod is one `Deployment` per namespace
   database — one binary, one PVC.
 - **Automatic retention.** Old shards are deleted (and remaining ones
   vacuumed) on a nightly cron.
-- **`/healthz` + `/readyz`**, structured JSON logs (`log/slog`) for
+- **Restart-safe tailing.** Reconnecting to an already-running container
+  (a dropped stream, or grepod itself restarting) resumes from the last
+  line already ingested instead of replaying its entire buffered log —
+  see [DESIGN/02](DESIGN/02_design_tailer.md#restart-safe-reconnects-v070).
+- **`/healthz` + `/readyz` + `/metrics`** (Prometheus text format: RED
+  metrics for insert/tail/search), structured JSON logs (`log/slog`) for
   grepod's own operation — see [DESIGN/04](DESIGN/04_design_api.md).
 
 See [DESIGN.md](DESIGN.md) for how it's built and

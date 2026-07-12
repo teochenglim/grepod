@@ -7,7 +7,7 @@ One row per version, newest first. Each links to its detail file in
 | :--- | :--- | :--- | :--- |
 | [v1.0.0](RELEASE/v1.0.0.md) | Stabilize & commit to compatibility | Not started | |
 | [v0.8.0](RELEASE/v0.8.0.md) | Read/write timeouts + SQLite write consolidation | Not started | |
-| [v0.7.0](RELEASE/v0.7.0.md) | Restart-safe tailing + RED metrics | Not started | `/metrics` moved here from v0.3.0. |
+| [v0.7.0](RELEASE/v0.7.0.md) | Restart-safe tailing + RED metrics | Shipped | Tagged. `/metrics` moved here from v0.3.0. |
 | [v0.6.0](RELEASE/v0.6.0.md) | Hardening, perf pass, docs catch-up | Shipped | Tagged. |
 | [v0.5.2](RELEASE/v0.5.2.md) | Fix permanent ingestion failure; browse logs without a keyword; fix unescaped log content in the UI | Shipped | Tagged. |
 | [v0.5.1](RELEASE/v0.5.1.md) | Fix self-tail feedback loop; pin image tags; release tooling fix | Shipped | Tagged. |
@@ -79,13 +79,21 @@ bump added in the same fix.
 
 ### `RELEASE/vX.Y.Z.md` status line
 
-Exactly two states, not three: `ready to tag — implemented and verified
-locally, uncommitted.` while work is still in progress, `shipped, tagged
-vX.Y.Z.` once the release doc itself is finished — not gated on the tag
-already existing in `git tag`, since finishing the doc is the cue for the
-user to run the commit/tag/push above (see
-[CLAUDE.md](CLAUDE.md#release-workflow-who-does-what)). Never write an
-intermediate "committed, not yet tagged/pushed" state: `make release`
-bumps `VERSION`, tags whatever's at `HEAD`, and pushes the tag all in one
-step, so there's no real gap between committed and tagged/pushed to
-describe.
+Exactly two states, not three. `ready to tag — implemented and verified
+locally, uncommitted.` is for mid-implementation only — a turn where
+Claude is stopping before the release's scope is actually done (partial
+work, or checking in before continuing). The moment Claude's own turn
+finishes a release — implementation done, tests/vet/build verified, docs
+updated — the status line goes straight to `shipped, tagged vX.Y.Z.`,
+written by Claude itself, in that same turn, **before** the user has run
+`git add`/`commit`/`make release`. This is deliberate, not premature: per
+[CLAUDE.md](CLAUDE.md#release-workflow-who-does-what), finishing the
+release doc in this final state *is* the cue for the user to immediately
+do the commit/tag/push — the status line describes where the work is
+headed as of "ready for the user's one remaining step," not literally
+"a tag exists in `git tag` right now." Never leave a just-finished
+release doc at `ready to tag`: that phrasing is only for a turn that
+truly isn't done yet, and never write an intermediate "committed, not yet
+tagged/pushed" state either — `make release` bumps `VERSION`, tags
+whatever's at `HEAD`, and pushes the tag all in one step, so there's no
+real gap between committed and tagged/pushed to describe.

@@ -37,10 +37,29 @@ func (f *fakeSink) snapshot() []storage.LogLine {
 	return out
 }
 
+// fakeMarkerStore is a storage.Store stand-in for LastSeen, letting tests
+// control what a fresh Manager sees as "already indexed" for a given
+// pod/container without touching real SQLite. calls counts invocations,
+// so tests can assert resolveMarker only ever queries once per container
+// per process lifetime (see RELEASE/v0.7.0.md).
+type fakeMarkerStore struct {
+	mu    sync.Mutex
+	byKey map[containerKey]time.Time
+	calls int
+}
+
+func (f *fakeMarkerStore) LastSeen(pod, container string) (time.Time, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	ts, ok := f.byKey[containerKey{pod: pod, container: container}]
+	return ts, ok, nil
+}
+
 func newTestManager() (*Manager, *fakeSink) {
 	sink := &fakeSink{}
 	clientset := fake.NewSimpleClientset()
-	mgr := NewManager(clientset, "default", sink, false, "")
+	mgr := NewManager(clientset, "default", sink, false, "", nil, nil)
 	return mgr, sink
 }
 
@@ -157,7 +176,7 @@ func TestReconcilePod_InitContainersRespectFlag(t *testing.T) {
 	t.Run("included when requested", func(t *testing.T) {
 		sink := &fakeSink{}
 		clientset := fake.NewSimpleClientset()
-		mgr := NewManager(clientset, "default", sink, true, "")
+		mgr := NewManager(clientset, "default", sink, true, "", nil, nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -179,7 +198,7 @@ func TestReconcilePod_InitContainersRespectFlag(t *testing.T) {
 func TestReconcilePod_NeverTailsSelfPod(t *testing.T) {
 	sink := &fakeSink{}
 	clientset := fake.NewSimpleClientset()
-	mgr := NewManager(clientset, "default", sink, false, "grepod-abc123")
+	mgr := NewManager(clientset, "default", sink, false, "grepod-abc123", nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -267,7 +286,7 @@ func TestIngest_EnqueuesEachLineWithMetadata(t *testing.T) {
 	mgr, sink := newTestManager()
 	before := time.Now()
 
-	mgr.ingest("web-1", "app", io.NopCloser(strings.NewReader("first line\nsecond line\n")))
+	mgr.ingest("web-1", "app", io.NopCloser(strings.NewReader("first line\nsecond line\n")), true)
 
 	lines := sink.snapshot()
 	if len(lines) != 2 {
@@ -291,7 +310,7 @@ func TestIngest_EnqueuesEachLineWithMetadata(t *testing.T) {
 func TestIngest_DetectsLevelPerLine(t *testing.T) {
 	mgr, sink := newTestManager()
 
-	mgr.ingest("web-1", "app", io.NopCloser(strings.NewReader("[ERROR] boom\nno level here\n")))
+	mgr.ingest("web-1", "app", io.NopCloser(strings.NewReader("[ERROR] boom\nno level here\n")), true)
 
 	lines := sink.snapshot()
 	if len(lines) != 2 {
@@ -302,6 +321,108 @@ func TestIngest_DetectsLevelPerLine(t *testing.T) {
 	}
 	if lines[1].Level != "" {
 		t.Errorf("line 1: Level = %q, want empty", lines[1].Level)
+	}
+}
+
+// RELEASE/v0.7.0: ingest only advances a container's marker when
+// trackMarker is true — fetchPreviousLogs (a different, crashed
+// container instance) must never influence the current instance's
+// SinceTime.
+func TestIngest_TracksMarkerOnlyWhenRequested(t *testing.T) {
+	mgr, _ := newTestManager()
+	key := containerKey{pod: "web-1", container: "app"}
+
+	mgr.ingest("web-1", "app", io.NopCloser(strings.NewReader("previous-instance line\n")), false)
+	if got := mgr.markerSince(key); !got.IsZero() {
+		t.Fatalf("trackMarker=false must not advance the marker, got %v", got)
+	}
+
+	before := time.Now()
+	mgr.ingest("web-1", "app", io.NopCloser(strings.NewReader("live line\n")), true)
+	if got := mgr.markerSince(key); got.Before(before) {
+		t.Fatalf("trackMarker=true should advance the marker to roughly now, got %v (before=%v)", got, before)
+	}
+}
+
+// RELEASE/v0.7.0: resolveMarker queries the MarkerStore at most once per
+// container per process lifetime — a namespace with many pods would
+// otherwise pay a query per container on every reconnect, not just the
+// first (see DESIGN/02).
+func TestResolveMarker_QueriesStoreOnceThenCaches(t *testing.T) {
+	seeded := time.Now().Add(-time.Hour)
+	key := containerKey{pod: "web-1", container: "app"}
+	store := &fakeMarkerStore{byKey: map[containerKey]time.Time{key: seeded}}
+
+	sink := &fakeSink{}
+	clientset := fake.NewSimpleClientset()
+	mgr := NewManager(clientset, "default", sink, false, "", store, nil)
+
+	mgr.resolveMarker(key)
+	if got := mgr.markerSince(key); got.Sub(seeded).Abs() > time.Millisecond {
+		t.Fatalf("markerSince = %v, want the seeded store value %v", got, seeded)
+	}
+
+	mgr.resolveMarker(key) // must not query the store again
+	store.mu.Lock()
+	calls := store.calls
+	store.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected exactly 1 MarkerStore.LastSeen call, got %d", calls)
+	}
+}
+
+// A container the MarkerStore has never indexed (fresh pod, or a nil
+// MarkerStore) resolves to the zero marker — streamLogs must then omit
+// SinceTime entirely and fall through to today's full-buffer-replay
+// behavior, not error or hang.
+func TestResolveMarker_NoStoreMatchFallsThroughToZeroMarker(t *testing.T) {
+	key := containerKey{pod: "web-1", container: "app"}
+	store := &fakeMarkerStore{byKey: map[containerKey]time.Time{}}
+
+	sink := &fakeSink{}
+	clientset := fake.NewSimpleClientset()
+	mgr := NewManager(clientset, "default", sink, false, "", store, nil)
+
+	mgr.resolveMarker(key)
+	if got := mgr.markerSince(key); !got.IsZero() {
+		t.Fatalf("expected a zero marker for a container the store has never seen, got %v", got)
+	}
+}
+
+// A nil MarkerStore (tests, or a deployment that opts out) must not
+// panic resolveMarker — it just resolves to the zero marker.
+func TestResolveMarker_NilStoreDoesNotPanic(t *testing.T) {
+	mgr, _ := newTestManager() // markerStore == nil
+	key := containerKey{pod: "web-1", container: "app"}
+
+	mgr.resolveMarker(key)
+	if got := mgr.markerSince(key); !got.IsZero() {
+		t.Fatalf("expected a zero marker with no MarkerStore configured, got %v", got)
+	}
+}
+
+// RELEASE/v0.7.0: a pod delete clears its containers' markers (stopPod),
+// but a container restart alone (reconcilePod's stopContainer +
+// startContainer path) must preserve the marker — the whole point is
+// that the fresh goroutine started right after a restart still benefits
+// from what the crashed instance's goroutine already ingested.
+func TestMarkers_ClearedOnPodDeleteButNotOnContainerRestart(t *testing.T) {
+	mgr, _ := newTestManager()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	key := containerKey{pod: "web-1", container: "app"}
+
+	mgr.reconcilePod(ctx, podWithContainer("web-1", "app", 0))
+	mgr.setMarker(key, time.Now())
+
+	mgr.reconcilePod(ctx, podWithContainer("web-1", "app", 1)) // restart-count bump
+	if got := mgr.markerSince(key); got.IsZero() {
+		t.Fatal("a container restart must not clear its marker")
+	}
+
+	mgr.stopPod("web-1")
+	if got := mgr.markerSince(key); !got.IsZero() {
+		t.Fatalf("a pod delete must clear its containers' markers, got %v", got)
 	}
 }
 

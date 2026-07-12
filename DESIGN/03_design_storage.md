@@ -17,6 +17,16 @@ either when it hits `BATCH_SIZE` (default 200) lines or every
 `BATCH_INTERVAL` (default 500ms) tick, whichever comes first. This bounds
 both memory use and worst-case indexing latency.
 
+Each `flush()` call records the Insert RED metrics (v0.7.0, see
+[DESIGN/04](04_design_api.md#metrics-v070)): `grepod_insert_requests_total`,
+`grepod_insert_duration_seconds` (wall time around `Store.InsertBatch`), and
+`grepod_insert_errors_total` when it returns an error.
+`recordDrop` — below — additionally increments `grepod_lines_dropped_total`
+per dropped line, independent of the rate-limited log warning. A `nil`
+`*metrics.Metrics` (every `BatchQueue` built directly via struct literal in
+tests, bypassing `NewBatchQueue`) disables all of this rather than panicking
+— every call site checks first.
+
 ### Never flooding on a full queue (v0.5.1)
 
 `Enqueue`'s full-channel case originally logged one `slog.Warn` per
@@ -61,8 +71,12 @@ back-pressure the tailer" philosophy:
   subscribed. There's no historical buffer to catch up on — that's what
   `/api/search` is for.
 
-`SubscriberCount()` exists for [v0.7.0](../RELEASE/v0.7.0.md)'s
-`grepod_tail_subscribers` gauge; it's not load-bearing today.
+`SubscriberCount()` backs [v0.7.0](../RELEASE/v0.7.0.md)'s
+`grepod_tail_subscribers` gauge (see
+[DESIGN/04](04_design_api.md#metrics-v070)) — a `promauto.NewGaugeFunc` in
+`cmd/server/main.go` reads it on every `/metrics` scrape rather than
+`Broadcaster` incrementing/decrementing a counter at subscribe/unsubscribe
+time, keeping `Broadcaster` itself with zero Prometheus dependency.
 
 ## Store: daily-sharded SQLite + FTS5
 
@@ -108,6 +122,30 @@ the rest.
 `InsertBatch` groups an incoming batch by the line's ingestion date (so a
 flush that straddles midnight lands correctly split), then opens one
 transaction per affected shard for throughput.
+
+## `LastSeen` (v0.7.0)
+
+`Store.LastSeen(pod, container string) (time.Time, bool, error)` returns the
+most recent timestamp already indexed for a pod/container — used by
+`tailer.Manager` to seed a restart-safe `SinceTime` on reconnect, see
+[DESIGN/02](02_design_tailer.md#restart-safe-reconnects-v070).
+
+It scans shard files **most-recent-day-first**, opening each as its own
+short-lived connection (separate from the long-lived write handles in
+`Store.dbs` — `LastSeen` routinely runs against a shard this process has
+never written to, e.g. right after a restart) and querying `SELECT
+MAX(timestamp) FROM fts WHERE pod = ? AND container = ?`. It **stops at the
+first day with a matching row** rather than scanning every shard and taking
+an overall max: shards are disjoint by construction (`InsertBatch` groups by
+date), so a later calendar day's timestamps are always greater than an
+earlier day's — the first hit scanning backward from today is already the
+answer. The scan is bounded to `markerLookbackDays` (30) days back; a
+container that hasn't logged within that window is treated as having no
+marker at all (`ok == false`) rather than scanned for indefinitely — most of
+that history will be gone via retention anyway (default `RETENTION_DAYS=7`),
+and the tailer's fallback for "no marker" (ingest the container's current
+full buffer, same as pre-v0.7.0) is a fine degradation for a container that
+stale.
 
 ## Search: cross-shard ATTACH
 

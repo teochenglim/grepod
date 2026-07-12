@@ -14,10 +14,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
 	"github.com/teochenglim/grepod/internal/api"
+	"github.com/teochenglim/grepod/internal/metrics"
 	"github.com/teochenglim/grepod/internal/storage"
 	"github.com/teochenglim/grepod/internal/tailer"
 	"github.com/teochenglim/grepod/web"
@@ -57,7 +60,13 @@ func main() {
 	}
 	defer store.Close()
 
-	queue := storage.NewBatchQueue(store, batchSize, batchInterval)
+	// m registers every RED-metric collector once, up front — see
+	// internal/metrics. Every package below that accepts a *metrics.Metrics
+	// records against this same instance, and /metrics (wired in api.New)
+	// reads them back via the shared default Prometheus registry.
+	m := metrics.New()
+
+	queue := storage.NewBatchQueue(store, batchSize, batchInterval, m)
 	defer queue.Close()
 
 	// broadcaster fans each ingested line out to live /api/tail
@@ -65,6 +74,17 @@ func main() {
 	// flush — see internal/storage/broadcast.go.
 	broadcaster := storage.NewBroadcaster()
 	sink := fanoutSink{queue: queue, broadcaster: broadcaster}
+
+	// grepod_tail_subscribers reads storage.Broadcaster.SubscriberCount()
+	// on every scrape rather than being incremented/decremented at
+	// subscribe/unsubscribe time — a GaugeFunc, not part of the metrics
+	// package itself, since it's the one collector that reaches into
+	// another package's state rather than being driven by an explicit
+	// Inc/Observe call at a RED boundary.
+	promauto.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "grepod_tail_subscribers",
+		Help: "Current number of active /api/tail SSE subscribers.",
+	}, func() float64 { return float64(broadcaster.SubscriberCount()) })
 
 	clientset, err := newInClusterClient()
 	if err != nil {
@@ -75,7 +95,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mgr := tailer.NewManager(clientset, namespace, sink, includeInit, podName)
+	mgr := tailer.NewManager(clientset, namespace, sink, includeInit, podName, store, m)
 	mgrDone := make(chan struct{})
 	go func() {
 		defer close(mgrDone)
@@ -88,7 +108,7 @@ func main() {
 	go store.StartRetentionCron(retentionDays, stopCron)
 	defer close(stopCron)
 
-	handler, err := api.New(store, web.TemplatesFS, web.StaticFS, mgr.Ready, defaultSearchDays, broadcaster)
+	handler, err := api.New(store, web.TemplatesFS, web.StaticFS, mgr.Ready, defaultSearchDays, broadcaster, m)
 	if err != nil {
 		slog.Error("failed to init API handler", "err", err)
 		os.Exit(1)

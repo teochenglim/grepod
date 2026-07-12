@@ -19,6 +19,18 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: grepod
+      annotations:
+        # /metrics (v0.7.0) is served on the same port as everything else
+        # — grepod is a single HTTP server, not a sidecar-per-concern
+        # setup — so scraping it needs no extra containerPort, just these
+        # annotations naming the existing one. Works with the classic
+        # annotation-based Prometheus scrape config
+        # (kubernetes_sd_configs: pod); see helm/templates/servicemonitor.yaml
+        # (values-gated, off by default) if your cluster runs the
+        # Prometheus Operator instead.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: grepod
       securityContext:
