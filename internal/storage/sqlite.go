@@ -137,6 +137,20 @@ func insertGroup(db *sql.DB, lines []LogLine) error {
 	return tx.Commit()
 }
 
+// sanitizeMatchQuery quotes each whitespace-separated term of a raw search
+// box query as its own FTS5 phrase (ANDed together implicitly), so that
+// punctuation naturally occurring in log lines — hyphens in pod/UUID
+// names, colons, etc. — is matched literally instead of being parsed as
+// FTS5 query-syntax operators (which otherwise errors outright on input
+// like "flush-on-size-marker" rather than searching for it).
+func sanitizeMatchQuery(query string) string {
+	fields := strings.Fields(query)
+	for i, f := range fields {
+		fields[i] = `"` + strings.ReplaceAll(f, `"`, `""`) + `"`
+	}
+	return strings.Join(fields, " ")
+}
+
 // Search runs a full-text query across every daily shard that exists in
 // [start, end] (inclusive), ranking hits with FTS5's bm25() and returning
 // a highlighted snippet for each hit. Shards with no file on disk for a
@@ -145,6 +159,7 @@ func (s *Store) Search(query string, start, end time.Time, limit int) ([]SearchR
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
+	query = sanitizeMatchQuery(query)
 
 	var dates []string
 	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
@@ -175,11 +190,15 @@ func (s *Store) Search(query string, start, end time.Time, limit int) ([]SearchR
 			log.Printf("warn: failed to attach shard %s: %v", date, err)
 			continue
 		}
+		// FTS5's snippet()/bm25()/MATCH only resolve a schema-qualified
+		// table name in the FROM clause, not as function arguments or in
+		// the WHERE clause — alias it back to the unqualified "fts" so
+		// every other reference in this SELECT can use that instead.
 		selects = append(selects, fmt.Sprintf(
 			`SELECT pod, namespace, container, timestamp,
-				snippet(%[1]s.fts, 4, '<mark>', '</mark>', '...', 64) AS snip,
-				bm25(%[1]s.fts) AS rank
-			 FROM %[1]s.fts WHERE %[1]s.fts MATCH ?`, alias))
+				snippet(fts, 4, '<mark>', '</mark>', '...', 64) AS snip,
+				bm25(fts) AS rank
+			 FROM %[1]s.fts AS fts WHERE fts MATCH ?`, alias))
 		args = append(args, query)
 	}
 	if len(selects) == 0 {

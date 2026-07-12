@@ -1,13 +1,23 @@
 .DEFAULT_GOAL := help
 
 BINARY_NAME := grepod
-VERSION     := $(shell cat VERSION)
-IMAGE       := $(BINARY_NAME)
+IMAGE       := $(BINARY_NAME):local
 GHCR_IMAGE  := ghcr.io/teochenglim/$(BINARY_NAME)
 NAMESPACE   := default
 RELEASE     := grepod
 
-# ---- develop ----------------------------------------------------------
+# Read the current version from the VERSION file (no external tooling required).
+VERSION_CURRENT := $(shell cat VERSION 2>/dev/null || echo 0.0.0)
+
+.PHONY: help
+help: ## Show this menu
+	@echo "grepod $(VERSION_CURRENT) - available targets:"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+	@echo "Release cycle:"
+	@echo "  make release VERSION=x.y.z   # bump VERSION, commit, tag, push -> triggers GitHub Actions"
+
+## --- develop ---------------------------------------------------------------
 
 .PHONY: build
 build: ## Build the grepod binary into ./bin
@@ -27,29 +37,33 @@ vet: ## Run go vet
 
 .PHONY: fmt
 fmt: ## Format all Go source
-	gofmt -s -w .
+	gofmt -l -w .
 
 .PHONY: tidy
-tidy: ## Tidy go.mod / go.sum
+tidy: ## Tidy go.mod/go.sum
 	go mod tidy
 
 .PHONY: clean
 clean: ## Remove build artifacts
 	rm -rf bin/ dist/
 
-# ---- packaging ----------------------------------------------------------
+## --- packaging ---------------------------------------------------------------
 
 .PHONY: docker-build
-docker-build: ## Build the Docker image, tagged with VERSION and latest
-	docker build -t $(IMAGE):$(VERSION) -t $(IMAGE):latest .
+docker-build: ## Build the grepod Docker image
+	docker build -t $(IMAGE) .
 
 .PHONY: k8s-apply
-k8s-apply: ## Apply the plain manifests in ./k8s
+k8s-apply: ## Apply the k8s/ manifests to the current kubectl context
 	kubectl apply -f k8s/
 
 .PHONY: k8s-delete
-k8s-delete: ## Delete the plain manifests in ./k8s
+k8s-delete: ## Delete the k8s/ manifests from the current kubectl context
 	kubectl delete -f k8s/
+
+.PHONY: k8s-logs
+k8s-logs: ## Tail logs from the grepod deployment in k8s
+	kubectl -n $(NAMESPACE) logs -f deployment/$(RELEASE)
 
 .PHONY: helm-lint
 helm-lint: ## Lint the Helm chart
@@ -63,43 +77,41 @@ helm-template: ## Render the Helm chart locally
 helm-install: ## Install/upgrade the Helm release
 	helm upgrade --install $(RELEASE) helm/ --namespace $(NAMESPACE) --create-namespace
 
-# ---- supply-chain ----------------------------------------------------------
+## --- supply-chain hardening -------------------------------------------------
 
 .PHONY: github-action-bump
-github-action-bump: ## Pin every GitHub Action to a commit SHA via pinact
-	pinact run
+github-action-bump: ## Pin .github/workflows/*.yml actions to latest release, full commit SHA (uses pinact)
+	@# Unauthenticated GitHub API calls are capped at 60/hour and this touches
+	@# several actions x (list tags + verify); export GITHUB_TOKEN to raise that limit.
+	go run github.com/suzuki-shunsuke/pinact/cmd/pinact@latest run --update
+	go run github.com/suzuki-shunsuke/pinact/cmd/pinact@latest run --verify
+	@echo "Actions bumped and verified. Review the diff, then run 'make vet test' before committing."
 
-# ---- release ----------------------------------------------------------
+## --- release ------------------------------------------------------------------
 
 .PHONY: version
-version: ## Print the current VERSION
-	@cat VERSION
+version: ## Print the version currently in VERSION
+	@echo $(VERSION_CURRENT)
 
 .PHONY: bump
-bump: ## Bump VERSION without tagging (usage: make bump VERSION=x.y.z)
-	@test -n "$(VERSION)" || (echo "usage: make bump VERSION=x.y.z" >&2; exit 1)
+bump: ## Rewrite the VERSION file (VERSION=x.y.z required)
+	@if [ -z "$(VERSION)" ]; then echo "Usage: make bump VERSION=x.y.z"; exit 1; fi
 	@echo "$(VERSION)" > VERSION
-	@echo "VERSION bumped to $(VERSION)"
+	@echo "VERSION -> $(VERSION)"
 
 .PHONY: tag
-tag: ## Tag HEAD with v<VERSION> (usage: make tag VERSION=x.y.z)
-	@test -n "$(VERSION)" || (echo "usage: make tag VERSION=x.y.z" >&2; exit 1)
-	git tag v$(VERSION)
+tag: ## Create and push a git tag for the current VERSION
+	git tag v$(VERSION_CURRENT)
+	git push origin v$(VERSION_CURRENT)
+	@echo "Tagged and pushed v$(VERSION_CURRENT)"
 
 .PHONY: release
-release: ## Bump VERSION, commit, tag, and push (usage: make release VERSION=x.y.z)
-	@test -n "$(VERSION)" || (echo "usage: make release VERSION=x.y.z" >&2; exit 1)
-	echo "$(VERSION)" > VERSION
+release: ## Bump, commit, tag, push - triggers GitHub Actions (VERSION=x.y.z required)
+	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=x.y.z"; exit 1; fi
+	$(MAKE) bump VERSION=$(VERSION)
 	git add VERSION
-	git commit -m "release: v$(VERSION)"
+	git diff --cached --quiet -- VERSION || git commit -m "release: v$(VERSION)"
 	git tag v$(VERSION)
 	git push origin HEAD
 	git push origin v$(VERSION)
-
-.PHONY: help
-help: ## Show this help (default target — just run `make`)
-	@echo "grepod — current VERSION: $(VERSION)"
-	@echo ""
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
-	@echo ""
-	@echo "To cut a release: \033[33mmake release VERSION=x.y.z\033[0m  (bumps VERSION, commits, tags, and pushes — triggers the tag-driven release CI)"
+	@echo "Released v$(VERSION) - GitHub Actions will build and publish."

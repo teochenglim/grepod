@@ -9,6 +9,14 @@ run more than one replica** — see
 [DESIGN/03](DESIGN/03_design_storage.md#why-not-horizontal-scale-out)
 before touching `replicas`/`autoscaling` anywhere.
 
+## Working conventions
+
+- **After implementing something (code, docs, or scaffolding), end that
+  turn's reply with a one-line suggested commit message** for what
+  changed — don't wait to be asked. Still never run `git add`/`commit`/
+  `push` unless explicitly asked to; this is only about proposing the
+  message, not performing the commit.
+
 ## Where things go
 
 Read [ARCHITECTURE.md](ARCHITECTURE.md) first — it has the full layering
@@ -83,8 +91,10 @@ and diverge from that skill's generic golden-standard template — don't
 
 ## Known constraints
 
-- One grepod instance = one namespace. Multi-namespace means multiple
-  releases/installs, not a config flag.
-- No built-in auth on the HTTP API or UI — see
-  [k8s/README.md#exposing-it-safely](k8s/README.md#exposing-it-safely)
-  before adding an Ingress.
+Non-goals, current gaps, and what's planned to close them are documented
+in [ARCHITECTURE.md](ARCHITECTURE.md), [DESIGN.md](DESIGN.md) (→
+`DESIGN/01`–`04`), and [RELEASE.md](RELEASE.md) (→ `RELEASE/vX.Y.Z.md`,
+including not-yet-shipped versions) — read those rather than duplicating
+their detail here. In short: one namespace per instance, no built-in auth
+(see [k8s/README.md#exposing-it-safely](k8s/README.md#exposing-it-safely)),
+no restart-safe tailing, no HTTP read/write timeouts yet.

@@ -210,11 +210,17 @@ func (m *Manager) tailContainer(ctx context.Context, podName, containerName stri
 			return
 		}
 
-		backoff *= 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
-		}
+		backoff = nextBackoff(backoff)
 	}
+}
+
+// nextBackoff doubles d, capped at maxBackoff.
+func nextBackoff(d time.Duration) time.Duration {
+	d *= 2
+	if d > maxBackoff {
+		d = maxBackoff
+	}
+	return d
 }
 
 func (m *Manager) fetchPreviousLogs(ctx context.Context, podName, containerName string) {

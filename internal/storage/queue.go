@@ -26,6 +26,7 @@ type BatchQueue struct {
 	store    *Store
 	in       chan LogLine
 	done     chan struct{}
+	stopped  chan struct{}
 }
 
 // NewBatchQueue creates a queue that flushes to store every `interval`
@@ -44,6 +45,7 @@ func NewBatchQueue(store *Store, size int, interval time.Duration) *BatchQueue {
 		store:    store,
 		in:       make(chan LogLine, size*4),
 		done:     make(chan struct{}),
+		stopped:  make(chan struct{}),
 	}
 	go q.run()
 	return q
@@ -77,7 +79,28 @@ func (q *BatchQueue) run() {
 		case <-ticker.C:
 			q.flush()
 		case <-q.done:
+			q.drainChannel()
 			q.flush()
+			close(q.stopped)
+			return
+		}
+	}
+}
+
+// drainChannel pulls everything currently buffered in q.in into q.buf
+// without blocking. Called only from the Close() path: a line can land in
+// q.in right before Close() runs, and since run()'s select would
+// otherwise pick between a ready <-q.in and a ready <-q.done
+// pseudo-randomly, skipping this drain could silently drop that line on
+// shutdown instead of flushing it.
+func (q *BatchQueue) drainChannel() {
+	for {
+		select {
+		case l := <-q.in:
+			q.mu.Lock()
+			q.buf = append(q.buf, l)
+			q.mu.Unlock()
+		default:
 			return
 		}
 	}
@@ -99,7 +122,11 @@ func (q *BatchQueue) flush() {
 }
 
 // Close stops the background flush loop, flushing any remaining buffered
-// lines first.
+// lines first. It blocks until that final flush has completed, so callers
+// (e.g. a graceful-shutdown sequence that closes the Store right after)
+// can rely on every enqueued line having reached storage before Close
+// returns.
 func (q *BatchQueue) Close() {
 	close(q.done)
+	<-q.stopped
 }
