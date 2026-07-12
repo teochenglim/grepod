@@ -11,17 +11,47 @@
   <header>
     <h1>grepod</h1>
     <span class="sub">Kubernetes-native log search, no Loki required</span>
+    <div class="mode-toggle">
+      <button id="modeSearchBtn" class="mode-btn active" type="button">Search</button>
+      <button id="modeTailBtn" class="mode-btn" type="button">Tail</button>
+    </div>
   </header>
 
-  <div class="toolbar">
-    <input type="date" id="start">
-    <input type="date" id="end">
-    <input type="text" id="query" placeholder="Search logs... (press Enter)">
-    <button id="searchBtn">Search</button>
-  </div>
+  <section id="searchView">
+    <div class="toolbar">
+      <input type="date" id="start">
+      <input type="date" id="end">
+      <input type="text" id="query" placeholder="Search logs... (press Enter)">
+      <button id="searchBtn">Search</button>
+      <label class="group-toggle"><input type="checkbox" id="groupToggle"> Group occurrences</label>
+    </div>
 
-  <div class="status" id="status">Ready.</div>
-  <div id="results"><div class="empty">Enter a keyword and press Search.</div></div>
+    <div class="level-tabs" id="levelTabs">
+      <button class="level-tab active" data-level="">ALL</button>
+      <button class="level-tab" data-level="INFO">INFO</button>
+      <button class="level-tab" data-level="WARN">WARN</button>
+      <button class="level-tab" data-level="DEBUG">DEBUG</button>
+      <button class="level-tab" data-level="FATAL">FATAL</button>
+    </div>
+
+    <div class="status" id="status">Ready.</div>
+    <div id="results"><div class="empty">Enter a keyword and press Search.</div></div>
+    <div class="load-more-wrap"><button id="loadMoreBtn" hidden>Load more</button></div>
+  </section>
+
+  <section id="tailView" hidden>
+    <div class="toolbar">
+      <select id="tailPod"><option value="">All pods</option></select>
+      <select id="tailContainer"><option value="">All containers</option></select>
+      <input type="text" id="tailQuery" placeholder="Filter tail (substring, press Enter)">
+      <button id="tailStartBtn">Start</button>
+      <button id="tailStopBtn" hidden>Stop</button>
+    </div>
+
+    <div class="status" id="tailStatus">Not connected.</div>
+    <div id="tailResults"><div class="empty">Press Start to begin live tailing.</div></div>
+    <button id="tailResumeBtn" hidden>New lines &#8595; Resume auto-scroll</button>
+  </section>
 
 <script src="/static/app.js"></script>
 </body>

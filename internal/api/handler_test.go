@@ -167,6 +167,123 @@ func TestHandleReadyz_ReflectsReadyFunc(t *testing.T) {
 	}
 }
 
+// DESIGN/04: level="" (the ALL tab) returns every result including lines
+// with no recognized level; a specific level filters to that level and
+// anything more severe.
+func TestHandleSearch_LevelFiltersAtOrAboveSeverity(t *testing.T) {
+	store, err := storage.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.InsertBatch([]storage.LogLine{
+		{Pod: "web-1", Container: "app", Timestamp: time.Now(), Level: "FATAL", Content: "leveltest fatal"},
+		{Pod: "web-1", Container: "app", Timestamp: time.Now(), Level: "INFO", Content: "leveltest info"},
+	}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, storage.NewBroadcaster())
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+
+	w := doGet(h, "/api/search?q=leveltest&level=WARN")
+	var resp searchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response was not valid JSON: %v", err)
+	}
+	if resp.Count != 1 || resp.Results[0].Level != "FATAL" {
+		t.Fatalf("level=WARN should only surface the FATAL line, got %+v", resp.Results)
+	}
+
+	w = doGet(h, "/api/search?q=leveltest")
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response was not valid JSON: %v", err)
+	}
+	if resp.Count != 2 {
+		t.Fatalf("no level param (ALL) should surface every line, got %d", resp.Count)
+	}
+}
+
+// DESIGN/04: a next_cursor is returned once more results exist past the
+// requested page, and feeding it back via ?cursor= surfaces the rest.
+func TestHandleSearch_CursorPaginatesResults(t *testing.T) {
+	store, err := storage.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Close)
+	lines := make([]storage.LogLine, 0, 510)
+	for i := 0; i < 510; i++ {
+		lines = append(lines, storage.LogLine{Pod: "web-1", Container: "app", Timestamp: time.Now(), Content: "cursortest line"})
+	}
+	if err := store.InsertBatch(lines); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, storage.NewBroadcaster())
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+
+	w := doGet(h, "/api/search?q=cursortest")
+	var first searchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &first); err != nil {
+		t.Fatalf("response was not valid JSON: %v", err)
+	}
+	if first.Count != 500 || first.NextCursor == "" {
+		t.Fatalf("expected a full page of 500 plus a next_cursor, got count=%d cursor=%q", first.Count, first.NextCursor)
+	}
+
+	w = doGet(h, "/api/search?q=cursortest&cursor="+first.NextCursor)
+	var second searchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &second); err != nil {
+		t.Fatalf("response was not valid JSON: %v", err)
+	}
+	if second.Count != 10 || second.NextCursor != "" {
+		t.Fatalf("expected the remaining 10 results with no further cursor, got count=%d cursor=%q", second.Count, second.NextCursor)
+	}
+}
+
+// DESIGN/04: /api/known surfaces the distinct pod/container names seen
+// recently, feeding the UI's filter dropdowns.
+func TestHandleKnown_ReturnsDistinctPodsAndContainers(t *testing.T) {
+	store, err := storage.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.InsertBatch([]storage.LogLine{
+		{Pod: "web-1", Container: "app", Timestamp: time.Now(), Content: "a"},
+		{Pod: "web-2", Container: "sidecar", Timestamp: time.Now(), Content: "b"},
+	}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+	h, err := New(store, web.TemplatesFS, web.StaticFS, func() bool { return true }, 7, storage.NewBroadcaster())
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+
+	w := doGet(h, "/api/known")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var got storage.KnownFilters
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("response was not valid JSON: %v", err)
+	}
+	if len(got.Pods) != 2 || len(got.Containers) != 2 {
+		t.Fatalf("expected 2 pods and 2 containers, got %+v", got)
+	}
+}
+
+// DESIGN/04: an invalid `days` param 400s rather than silently defaulting.
+func TestHandleKnown_InvalidDaysReturns400(t *testing.T) {
+	w := doGet(newTestHandler(t, true), "/api/known?days=not-a-number")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
 // DESIGN/04: static assets are served from the embedded web.StaticFS
 // under /static/.
 func TestStaticAssetsAreServed(t *testing.T) {

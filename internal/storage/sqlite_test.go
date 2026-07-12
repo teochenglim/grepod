@@ -30,20 +30,20 @@ func TestInsertBatch_SplitsAcrossDailyShards(t *testing.T) {
 		}
 	}
 
-	todayResults, err := store.Search("shard-marker", today, today, 500)
+	todayPage, err := store.Search(SearchOptions{Query: "shard-marker", Start: today, End: today, Limit: 500})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if len(todayResults) != 1 || !strings.Contains(todayResults[0].Snippet, "today") {
-		t.Fatalf("searching just today's range should only surface today's line, got %+v", todayResults)
+	if len(todayPage.Results) != 1 || !strings.Contains(todayPage.Results[0].Snippet, "today") {
+		t.Fatalf("searching just today's range should only surface today's line, got %+v", todayPage.Results)
 	}
 
-	bothResults, err := store.Search("shard-marker", yesterday, today, 500)
+	bothPage, err := store.Search(SearchOptions{Query: "shard-marker", Start: yesterday, End: today, Limit: 500})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if len(bothResults) != 2 {
-		t.Fatalf("searching yesterday..today should surface both shards' lines, got %d", len(bothResults))
+	if len(bothPage.Results) != 2 {
+		t.Fatalf("searching yesterday..today should surface both shards' lines, got %d", len(bothPage.Results))
 	}
 }
 
@@ -59,18 +59,21 @@ func TestSearch_ReturnsHighlightedSnippet(t *testing.T) {
 		t.Fatalf("InsertBatch: %v", err)
 	}
 
-	results, err := store.Search("panic", now, now, 500)
+	page, err := store.Search(SearchOptions{Query: "panic", Start: now, End: now, Limit: 500})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
+	if len(page.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(page.Results))
 	}
-	if !strings.Contains(results[0].Snippet, "<mark>") {
-		t.Errorf("expected a highlighted snippet, got %q", results[0].Snippet)
+	if !strings.Contains(page.Results[0].Snippet, "<mark>") {
+		t.Errorf("expected a highlighted snippet, got %q", page.Results[0].Snippet)
 	}
-	if results[0].Pod != "web-1" || results[0].Container != "app" {
-		t.Errorf("unexpected result metadata: %+v", results[0])
+	if page.Results[0].Pod != "web-1" || page.Results[0].Container != "app" {
+		t.Errorf("unexpected result metadata: %+v", page.Results[0])
+	}
+	if page.NextCursor != "" {
+		t.Errorf("expected no next cursor when results fit in one page, got %q", page.NextCursor)
 	}
 }
 
@@ -91,12 +94,15 @@ func TestSearch_CapsAtFiveHundredResults(t *testing.T) {
 		t.Fatalf("InsertBatch: %v", err)
 	}
 
-	results, err := store.Search("captest", now, now, 100000)
+	page, err := store.Search(SearchOptions{Query: "captest", Start: now, End: now, Limit: 100000})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if len(results) != 500 {
-		t.Fatalf("expected results capped at 500, got %d", len(results))
+	if len(page.Results) != 500 {
+		t.Fatalf("expected results capped at 500, got %d", len(page.Results))
+	}
+	if page.NextCursor == "" {
+		t.Error("expected a next cursor since 510 lines exist beyond the 500 cap")
 	}
 }
 
@@ -106,13 +112,141 @@ func TestSearch_SkipsMissingShardsWithoutError(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Now()
 
-	results, err := store.Search("anything", now.AddDate(0, 0, -30), now, 500)
+	page, err := store.Search(SearchOptions{Query: "anything", Start: now.AddDate(0, 0, -30), End: now, Limit: 500})
 	if err != nil {
 		t.Fatalf("Search over a range with no shards should not error: %v", err)
 	}
-	if len(results) != 0 {
-		t.Fatalf("expected no results, got %d", len(results))
+	if len(page.Results) != 0 {
+		t.Fatalf("expected no results, got %d", len(page.Results))
 	}
+}
+
+// DESIGN/03: paging through with the cursor from one page surfaces the
+// remaining results exactly once each, with no gaps or duplicates.
+func TestSearch_CursorPagesThroughAllResults(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now()
+
+	const total = 30
+	lines := make([]LogLine, 0, total)
+	for i := 0; i < total; i++ {
+		lines = append(lines, LogLine{
+			Pod: "web-1", Namespace: "default", Container: "app",
+			Timestamp: now, Content: fmt.Sprintf("pagetest line %d", i),
+		})
+	}
+	if err := store.InsertBatch(lines); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	seen := make(map[string]bool)
+	cursor := ""
+	for pages := 0; ; pages++ {
+		if pages > total {
+			t.Fatalf("paginated more times than there are results — likely an infinite loop")
+		}
+		page, err := store.Search(SearchOptions{Query: "pagetest", Start: now, End: now, Limit: 7, Cursor: cursor})
+		if err != nil {
+			t.Fatalf("Search (cursor=%q): %v", cursor, err)
+		}
+		for _, r := range page.Results {
+			if seen[r.Snippet] {
+				t.Fatalf("duplicate result across pages: %q", r.Snippet)
+			}
+			seen[r.Snippet] = true
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	if len(seen) != total {
+		t.Fatalf("expected to see all %d results across pages, got %d", total, len(seen))
+	}
+}
+
+// DESIGN/03: MinLevel filters to that level and anything more severe
+// (FATAL > ERROR > WARN > INFO > DEBUG > TRACE), not an exact match, and
+// unrecognized/empty levels are their own bucket rather than matching
+// every filter.
+func TestSearch_MinLevelFiltersAtOrAboveSeverity(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now()
+
+	if err := store.InsertBatch([]LogLine{
+		{Pod: "web-1", Container: "app", Timestamp: now, Level: "FATAL", Content: "leveltest fatal"},
+		{Pod: "web-1", Container: "app", Timestamp: now, Level: "WARN", Content: "leveltest warn"},
+		{Pod: "web-1", Container: "app", Timestamp: now, Level: "DEBUG", Content: "leveltest debug"},
+		{Pod: "web-1", Container: "app", Timestamp: now, Level: "", Content: "leveltest unrecognized"},
+	}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	page, err := store.Search(SearchOptions{Query: "leveltest", Start: now, End: now, Limit: 500, MinLevel: "WARN"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	var levels []string
+	for _, r := range page.Results {
+		levels = append(levels, r.Level)
+	}
+	if len(levels) != 2 {
+		t.Fatalf("MinLevel=WARN should match WARN and FATAL only, got %v", levels)
+	}
+	for _, l := range levels {
+		if l != "WARN" && l != "FATAL" {
+			t.Errorf("unexpected level %q passed a MinLevel=WARN filter", l)
+		}
+	}
+
+	allPage, err := store.Search(SearchOptions{Query: "leveltest", Start: now, End: now, Limit: 500})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(allPage.Results) != 4 {
+		t.Fatalf("no MinLevel (ALL) should return every line including the unrecognized bucket, got %d", len(allPage.Results))
+	}
+}
+
+// DESIGN/03: KnownPods returns the distinct pod/container names seen
+// within the requested window, sorted, deduplicated, and excluding
+// anything outside that window.
+func TestKnownPods_ReturnsDistinctNamesWithinWindow(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now()
+	old := now.AddDate(0, 0, -10)
+
+	if err := store.InsertBatch([]LogLine{
+		{Pod: "web-1", Container: "app", Timestamp: now, Content: "a"},
+		{Pod: "web-1", Container: "app", Timestamp: now, Content: "b"},
+		{Pod: "web-2", Container: "sidecar", Timestamp: now, Content: "c"},
+		{Pod: "old-pod", Container: "old-container", Timestamp: old, Content: "d"},
+	}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	filters, err := store.KnownPods(now.AddDate(0, 0, -1))
+	if err != nil {
+		t.Fatalf("KnownPods: %v", err)
+	}
+	if got, want := filters.Pods, []string{"web-1", "web-2"}; !slicesEqual(got, want) {
+		t.Errorf("Pods = %v, want %v", got, want)
+	}
+	if got, want := filters.Containers, []string{"app", "sidecar"}; !slicesEqual(got, want) {
+		t.Errorf("Containers = %v, want %v", got, want)
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // DESIGN/03: shards older than retentionDays are deleted; shards within

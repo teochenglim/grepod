@@ -9,8 +9,8 @@ One row per version, newest first. Each links to its detail file in
 | [v0.8.0](RELEASE/v0.8.0.md) | Read/write timeouts + SQLite write consolidation | Not started | |
 | [v0.7.0](RELEASE/v0.7.0.md) | Restart-safe tailing + RED metrics | Not started | `/metrics` moved here from v0.3.0. |
 | [v0.6.0](RELEASE/v0.6.0.md) | Hardening, perf pass, docs catch-up | Not started | |
-| [v0.5.0](RELEASE/v0.5.0.md) | Live tail UI + search UX + level filtering | Not started | |
-| [v0.4.2](RELEASE/v0.4.2.md) | Release tooling fix: push HEAD before tagging | Ready to tag | Implemented, verified locally, uncommitted. |
+| [v0.5.0](RELEASE/v0.5.0.md) | Live tail UI + search UX + level filtering | Shipped | Tagged. Tail mode, level tabs, cursor pagination, pod/container filters, group-occurrences — see its file. |
+| [v0.4.2](RELEASE/v0.4.2.md) | Release tooling fix: push HEAD before tagging | Shipped | Tagged. |
 | [v0.4.1](RELEASE/v0.4.1.md) | Release tooling fix: no more auto-generated bump commits | Shipped | Tagged. Surfaced the exact gap v0.4.2 fixes — see its file. |
 | [v0.4.0](RELEASE/v0.4.0.md) | Live tail backend (`/api/tail`) | Shipped | Tagged. Also fixed a missing-SIGTERM and shutdown-ordering bug — see its file. |
 | [v0.3.0](RELEASE/v0.3.0.md) | Observability foundation: health, structured logging, log level | Shipped | Tagged. |
@@ -64,3 +64,16 @@ GitHub Release + GHCR image, multi-arch since v0.4.0's CI fix). See each
 version's file in `RELEASE/` for what's actually in scope. See
 [RELEASE/v0.4.1](RELEASE/v0.4.1.md) for how this flow settled here after
 three earlier iterations.
+
+### `RELEASE/vX.Y.Z.md` status line
+
+Exactly two states, not three: `ready to tag — implemented and verified
+locally, uncommitted.` while work is still in progress, `shipped, tagged
+vX.Y.Z.` once the release doc itself is finished — not gated on the tag
+already existing in `git tag`, since finishing the doc is the cue for the
+user to run the commit/tag/push above (see
+[CLAUDE.md](CLAUDE.md#release-workflow-who-does-what)). Never write an
+intermediate "committed, not yet tagged/pushed" state: `make release`
+bumps `VERSION`, tags whatever's at `HEAD`, and pushes the tag all in one
+step, so there's no real gap between committed and tagged/pushed to
+describe.

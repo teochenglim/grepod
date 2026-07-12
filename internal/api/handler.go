@@ -10,6 +10,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,6 +61,7 @@ func New(store *storage.Store, templatesFS, staticFS embed.FS, ready func() bool
 
 	h.mux.HandleFunc("/api/search", h.handleSearch)
 	h.mux.HandleFunc("/api/tail", h.handleTail)
+	h.mux.HandleFunc("/api/known", h.handleKnown)
 	h.mux.HandleFunc("/healthz", h.handleHealthz)
 	h.mux.HandleFunc("/readyz", h.handleReadyz)
 	h.mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
@@ -107,11 +109,13 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 type searchResponse struct {
-	Query   string                 `json:"query"`
-	Start   string                 `json:"start"`
-	End     string                 `json:"end"`
-	Count   int                    `json:"count"`
-	Results []storage.SearchResult `json:"results"`
+	Query      string                 `json:"query"`
+	Start      string                 `json:"start"`
+	End        string                 `json:"end"`
+	Level      string                 `json:"level"`
+	Count      int                    `json:"count"`
+	Results    []storage.SearchResult `json:"results"`
+	NextCursor string                 `json:"next_cursor"`
 }
 
 func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -148,19 +152,50 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := h.store.Search(q, start, end, 500)
+	level := r.URL.Query().Get("level")
+
+	page, err := h.store.Search(storage.SearchOptions{
+		Query: q, Start: start, End: end, Limit: 500,
+		Cursor: r.URL.Query().Get("cursor"), MinLevel: level,
+	})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "search failed: "+err.Error())
 		return
 	}
 
 	writeJSON(w, http.StatusOK, searchResponse{
-		Query:   q,
-		Start:   startStr,
-		End:     endStr,
-		Count:   len(results),
-		Results: results,
+		Query:      q,
+		Start:      startStr,
+		End:        endStr,
+		Level:      level,
+		Count:      len(page.Results),
+		Results:    page.Results,
+		NextCursor: page.NextCursor,
 	})
+}
+
+// handleKnown feeds the pod/container filter dropdowns: the distinct
+// pod/container names seen in the last `days` days (default 1, i.e. just
+// today) so the UI can offer a pick-list instead of requiring an exact
+// free-text match.
+func (h *Handler) handleKnown(w http.ResponseWriter, r *http.Request) {
+	days := 1
+	if raw := r.URL.Query().Get("days"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeJSONError(w, http.StatusBadRequest, "invalid days, expected a positive integer")
+			return
+		}
+		days = parsed
+	}
+	since := time.Now().AddDate(0, 0, -(days - 1))
+
+	filters, err := h.store.KnownPods(since)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "known-pods lookup failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, filters)
 }
 
 type tailEvent struct {

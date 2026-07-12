@@ -26,13 +26,13 @@ func pollUntilCount(t *testing.T, store *Store, query string, want int, timeout 
 	var lastErr error
 	var lastCount int
 	for time.Now().Before(deadline) {
-		results, err := store.Search(query, today, today, 500)
+		page, err := store.Search(SearchOptions{Query: query, Start: today, End: today, Limit: 500})
 		if err != nil {
 			lastErr = err
-		} else if len(results) == want {
+		} else if len(page.Results) == want {
 			return
 		} else {
-			lastCount = len(results)
+			lastCount = len(page.Results)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -76,11 +76,11 @@ func TestBatchQueue_CloseFlushesRemaining(t *testing.T) {
 
 	// Close() is documented to block until the flush completes, so this
 	// must already be true with no polling needed.
-	results, err := store.Search("close-flush-marker", time.Now(), time.Now(), 500)
+	page, err := store.Search(SearchOptions{Query: "close-flush-marker", Start: time.Now(), End: time.Now(), Limit: 500})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected Close to have flushed the buffered line, got %d results", len(results))
+	if len(page.Results) != 1 {
+		t.Fatalf("expected Close to have flushed the buffered line, got %d results", len(page.Results))
 	}
 }
