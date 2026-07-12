@@ -47,7 +47,7 @@ spec:
           # hand-edited — see Makefile). Point this at your own
           # registry/build if you forked or build locally
           # (`make docker-build`).
-          image: "ghcr.io/teochenglim/grepod:0.6.0"
+          image: "ghcr.io/teochenglim/grepod:0.7.0"
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
